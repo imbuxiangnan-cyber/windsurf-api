@@ -4,6 +4,7 @@
 <meta charset="UTF-8">
 <meta name="viewport" content="width=device-width, initial-scale=1.0">
 <title>Windsurf API Dashboard</title>
+<link rel="icon" href="data:image/svg+xml,<svg xmlns='http://www.w3.org/2000/svg' viewBox='0 0 32 32'><text y='28' font-size='28'>🌊</text></svg>">
 <style>
   * { margin: 0; padding: 0; box-sizing: border-box; }
   body { font-family: -apple-system, BlinkMacSystemFont, 'Segoe UI', Roboto, sans-serif; background: #0f172a; color: #e2e8f0; min-height: 100vh; }
@@ -231,7 +232,7 @@ async function loadUsage() {
   let html = `<p style="margin-bottom:12px">Total: <strong>${data.totalRequests}</strong> requests, <strong>${data.totalTokens}</strong> tokens</p>`;
   html += '<table><thead><tr><th>Date</th><th>Requests</th><th>Tokens</th><th>Top Model</th></tr></thead><tbody>';
   for (const d of data.daily.slice().reverse()) {
-    const topModel = Object.entries(d.byModel || {}).sort((a,b) => (b[1] as number) - (a[1] as number))[0];
+    const topModel = Object.entries(d.byModel || {}).sort((a,b) => Number(b[1]) - Number(a[1]))[0];
     html += `<tr><td>${d.date}</td><td>${d.requests}</td><td>${d.tokens}</td><td>${topModel ? topModel[0] : '-'}</td></tr>`;
   }
   html += '</tbody></table>';
