@@ -215,14 +215,52 @@ export class WindsurfClient {
     }
   }
 
+  /**
+   * Format full conversation history into a single prompt for Cascade.
+   * Cascade only accepts one text input per message, so we embed conversation
+   * context when there are multiple turns.
+   */
+  private formatConversation(messages: any[]): string {
+    // Single user message — send as-is (most common case, no overhead)
+    const nonSystem = messages.filter((m: any) => m.role !== 'system');
+    if (nonSystem.length === 1 && nonSystem[0].role === 'user') {
+      const system = messages.filter((m: any) => m.role === 'system');
+      const systemText = system.map((m: any) => String(m.content)).join('\n');
+      const userText = String(nonSystem[0].content);
+      return systemText ? `${systemText}\n\n${userText}` : userText;
+    }
+
+    // Multi-turn: format as conversation context
+    const parts: string[] = [];
+    for (const msg of messages) {
+      const content = String(msg.content);
+      switch (msg.role) {
+        case 'system':
+          parts.push(`[System]\n${content}`);
+          break;
+        case 'user':
+          parts.push(`[User]\n${content}`);
+          break;
+        case 'assistant':
+          parts.push(`[Assistant]\n${content}`);
+          break;
+        case 'tool':
+          parts.push(`[Tool Result]\n${content}`);
+          break;
+        default:
+          parts.push(`[${msg.role}]\n${content}`);
+      }
+    }
+    return parts.join('\n\n');
+  }
+
   async *streamChat(
     messages: any[], modelEnum: number, modelUid: string,
     options: CascadeConfigOptions = {},
   ): AsyncGenerator<ChatChunk> {
     await this.warmup();
     const cascadeId = await this.startCascade();
-    const userMsg = messages.filter((m: any) => m.role === 'user').pop();
-    const text = userMsg ? String(userMsg.content) : '';
+    const text = this.formatConversation(messages);
     await this.sendMessage(cascadeId, text, modelEnum, modelUid, options);
     yield* this.streamCascade(cascadeId, 0);
   }
