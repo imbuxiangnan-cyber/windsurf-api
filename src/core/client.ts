@@ -3,6 +3,9 @@
  */
 
 import { randomUUID } from 'crypto';
+import { tmpdir } from 'os';
+import { join } from 'path';
+import { mkdirSync, existsSync } from 'fs';
 import { grpcFrame, grpcUnary } from './grpc.js';
 import {
   buildInitializePanelStateRequest,
@@ -60,7 +63,9 @@ export class WindsurfClient {
       await grpcUnary(this.port, this.csrfToken, `${LS_SERVICE}/InitializeCascadePanelState`, grpcFrame(initProto), 5000);
     } catch (e: any) { log.warn('InitializeCascadePanelState:', e.message); }
     try {
-      const wsProto = buildAddTrackedWorkspaceRequest('/tmp/windsurf-workspace');
+      const wsDir = join(tmpdir(), 'windsurf-workspace');
+      if (!existsSync(wsDir)) try { mkdirSync(wsDir, { recursive: true }); } catch { /* ignore */ }
+      const wsProto = buildAddTrackedWorkspaceRequest(wsDir);
       await grpcUnary(this.port, this.csrfToken, `${LS_SERVICE}/AddTrackedWorkspace`, grpcFrame(wsProto), 5000);
     } catch (e: any) { log.warn('AddTrackedWorkspace:', e.message); }
     try {
