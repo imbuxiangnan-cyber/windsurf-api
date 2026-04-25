@@ -16,6 +16,7 @@ import { initChannels, addChannel, listChannels, removeChannel, clearAllChannels
 import { initTokens } from './services/token.js';
 import { initStats, getStats } from './services/stats.js';
 import { loadProxyConfig, setProxy, enableProxy, disableProxy, clearProxy, applyProxy } from './services/proxy.js';
+import { windsurfLogin } from './core/login.js';
 
 const BANNER = `
 ╦ ╦┬┌┐┌┌┬┐┌─┐┬ ┬┬─┐┌─┐  ╔═╗╔═╗╦
@@ -245,53 +246,61 @@ async function cmdAuth(flags: Record<string, string>) {
   console.log('  Windsurf Account Authentication');
   console.log('  ─────────────────────────────────────\n');
 
-  // Try auto-extract first
-  const desktopToken = extractDesktopToken();
   let cleanToken = '';
   let finalLabel = '';
 
+  // Try auto-extract first
+  const desktopToken = extractDesktopToken();
+
+  console.log('  Choose login method:\n');
   if (desktopToken) {
-    console.log('  ✓ Found token from Windsurf desktop app!\n');
-    const useAuto = await prompt('  Use this token? (Y/n): ');
-    if (!useAuto || useAuto.toLowerCase() === 'y' || useAuto.toLowerCase() === 'yes') {
-      cleanToken = desktopToken;
-      finalLabel = `desktop-${Date.now().toString(36)}`;
-      console.log('  ✓ Using desktop app token\n');
-    }
+    console.log('  [1] Auto — from Windsurf desktop app (detected!)');
   }
+  console.log('  [2] Email + Password — login via Windsurf API');
+  console.log('  [3] Token — paste session token manually\n');
 
-  if (!cleanToken) {
-    console.log('  Step 1: Open Windsurf in your browser and log in\n');
+  const defaultChoice = desktopToken ? '1' : '2';
+  const choice = await prompt(`  Select (${defaultChoice}): `) || defaultChoice;
 
-    const autoOpen = flags['no-browser'] !== 'true';
-    if (autoOpen) {
-      console.log('  Opening https://windsurf.com ...');
-      openBrowser('https://windsurf.com');
-      console.log('');
-    }
+  if (choice === '1' && desktopToken) {
+    cleanToken = desktopToken;
+    finalLabel = `desktop-${Date.now().toString(36)}`;
+    console.log('\n  ✓ Using token from Windsurf desktop app\n');
 
-    console.log('  Step 2: Get your session token');
-    console.log('  ┌──────────────────────────────────────────────┐');
-    console.log('  │  Option A: From browser cookies              │');
-    console.log('  │    1. Press F12 to open DevTools             │');
-    console.log('  │    2. Go to Application → Cookies            │');
-    console.log('  │    3. Find "devin_session_token"             │');
-    console.log('  │    4. Copy the value                         │');
-    console.log('  │                                              │');
-    console.log('  │  Option B: From Windsurf auth page           │');
-    console.log('  │    1. Go to windsurf.com account settings    │');
-    console.log('  │    2. Copy the auth/session token            │');
-    console.log('  └──────────────────────────────────────────────┘\n');
+  } else if (choice === '2') {
+    console.log('');
+    const email = await prompt('  Email: ');
+    if (!email) { console.error('\n  ✗ No email provided. Aborted.\n'); process.exit(1); }
 
-    const token = await prompt('  Paste your token here: ');
+    // Hide password input
+    const password = await prompt('  Password: ');
+    if (!password) { console.error('\n  ✗ No password provided. Aborted.\n'); process.exit(1); }
 
-    if (!token) {
-      console.error('\n  ✗ No token provided. Aborted.\n');
+    console.log('\n  Logging in...');
+    try {
+      const result = await windsurfLogin(email, password);
+      cleanToken = result.sessionToken;
+      finalLabel = email.split('@')[0] || `login-${Date.now().toString(36)}`;
+      console.log(`  ✓ Login successful!\n`);
+    } catch (err: any) {
+      console.error(`\n  ✗ Login failed: ${err.message}\n`);
       process.exit(1);
     }
 
-    cleanToken = token.replace(/^['"]|['"]$/g, '').trim();
+  } else {
+    console.log('');
+    console.log('  How to get your session token:');
+    console.log('  ┌──────────────────────────────────────────────┐');
+    console.log('  │  1. Open https://windsurf.com and log in     │');
+    console.log('  │  2. Press F12 → Application → Cookies        │');
+    console.log('  │  3. Find "devin_session_token"               │');
+    console.log('  │  4. Copy the value                           │');
+    console.log('  └──────────────────────────────────────────────┘\n');
 
+    const token = await prompt('  Paste your token here: ');
+    if (!token) { console.error('\n  ✗ No token provided. Aborted.\n'); process.exit(1); }
+
+    cleanToken = token.replace(/^['"]|['"]$/g, '').trim();
     if (cleanToken.length < 10) {
       console.error('\n  ✗ Token looks too short. Please check and try again.\n');
       process.exit(1);
@@ -538,10 +547,11 @@ function showHelp() {
   console.log('    --proxy-env              Use proxy from env vars');
   console.log('');
   console.log('  auth                        Interactive login (recommended)');
-  console.log('    --no-browser              Don\'t auto-open browser');
+  console.log('                              Supports: auto-detect / email+password / token');
   console.log('');
-  console.log('  add-account                 Add account directly with token');
-  console.log('    --token, -t <token>       Session token (devin_session_token)');
+  console.log('  add-account                 Add account directly');
+  console.log('    --token, -t <token>       Session token');
+  console.log('    --auto                    Auto-extract from Windsurf desktop app');
   console.log('    --label, -l <label>       Account label');
   console.log('    --tier <tier>             Account tier (default: pro)');
   console.log('');

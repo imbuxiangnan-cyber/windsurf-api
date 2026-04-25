@@ -33,28 +33,35 @@ npm run build
 ### 基本用法
 
 ```bash
-# 1. 交互式登录（推荐，自动打开浏览器）
-npx windsurf-api auth
-
-# 或直接用 token 添加
-npx windsurf-api add-account --token <devin_session_token>
-
-# 2. 启动服务
+# 方式一：已装 Windsurf 桌面客户端（零配置，自动提取 token + LS）
 npx windsurf-api start
 
-# 或指定 Language Server 路径
-npx windsurf-api start --ls-path /path/to/language_server_linux_x64
+# 方式二：交互式登录（支持邮箱密码 / 手动粘贴 token）
+npx windsurf-api auth
+npx windsurf-api start
+
+# 方式三：直接用 token 添加
+npx windsurf-api add-account --token <session_token>
+npx windsurf-api start --ls-path /path/to/language_server
 ```
 
 服务器默认监听 `http://localhost:4000`。
 
-### Language Server 获取
+### 登录方式
 
-从 Windsurf 桌面端获取 LS 二进制文件：
+| 方式 | 前提 | 说明 |
+|------|------|------|
+| **自动提取** | 已装 Windsurf 桌面端并登录过 | 启动时自动从桌面 app 提取 token 和 LS |
+| **邮箱密码** | 有 Windsurf 账号 | `npx windsurf-api auth` 选择 [2] |
+| **手动粘贴** | 有 session token | `auth` 选 [3] 或 `add-account --token` |
 
-- **Windows**: `%APPDATA%\Windsurf\bin\language_server_windows_x64.exe`
+### Language Server
+
+启动时自动检测，无需手动指定。如未自动检测到，可手动指定：
+
+- **Windows**: `<Windsurf安装目录>\resources\app\extensions\windsurf\bin\language_server_windows_x64.exe`
 - **macOS**: `~/Library/Application Support/Windsurf/resources/app/extensions/windsurf/bin/language_server_macos_arm`
-- **Linux**: `~/.windsurf/bin/language_server_linux_x64`
+- **Linux**: `/opt/Windsurf/resources/app/extensions/windsurf/bin/language_server_linux_x64`
 
 ## 📋 CLI 命令
 
