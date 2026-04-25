@@ -142,6 +142,8 @@ export async function startLanguageServer(opts: {
     '--enable_index_service=false',
     '--enable_lsp=false',
     '--detect_proxy=false',
+    '--manager_connect_timeout=15',
+    '--manager_max_connection_failures=5',
   ];
 
   log.info(`Starting LS: ${binaryPath} on port ${port}`);
@@ -156,9 +158,20 @@ export async function startLanguageServer(opts: {
     const line = d.toString().trim();
     if (line) log.warn('[LS:err]', line.slice(0, 200));
   });
+  let _restartCount = 0;
+  const MAX_RESTARTS = 3;
   proc.on('exit', (code) => {
     log.warn(`LS exited: code=${code}`);
     _ready = false;
+    _process = null;
+    // Auto-restart if crashed unexpectedly
+    if (code !== 0 && _restartCount < MAX_RESTARTS) {
+      _restartCount++;
+      log.info(`Auto-restarting LS (attempt ${_restartCount}/${MAX_RESTARTS})...`);
+      setTimeout(() => {
+        startLanguageServer(opts).catch(e => log.error('LS restart failed:', e.message));
+      }, 2000);
+    }
   });
 
   for (let i = 0; i < 30; i++) {
