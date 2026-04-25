@@ -6,6 +6,7 @@ import http from 'http';
 import { listModels, listAnthropicModels } from '../models.js';
 import { handleChatCompletion } from '../services/chat.js';
 import { handleAnthropicMessage } from '../services/anthropic.js';
+import { handleCountTokens } from '../services/count-tokens.js';
 import { hasActiveChannels } from '../services/channel.js';
 import { isLsReady } from '../core/langserver.js';
 
@@ -63,7 +64,18 @@ export async function handleApiRoutes(
     return true;
   }
 
-  // POST /v1/messages (Anthropic)
+  // POST /v1/messages/count_tokens (Claude Code token counting)
+  if (path === '/v1/messages/count_tokens' && method === 'POST') {
+    const body = (req as any).parsedBody;
+    if (!body) {
+      json(res, 400, { type: 'error', error: { type: 'invalid_request_error', message: 'Invalid JSON body' } });
+      return true;
+    }
+    await handleCountTokens(req, res, body);
+    return true;
+  }
+
+  // POST /v1/messages (Anthropic) — also match with ?beta= query
   if (path === '/v1/messages' && method === 'POST') {
     if (!isLsReady()) {
       json(res, 503, { type: 'error', error: { type: 'api_error', message: 'Language server not ready' } });

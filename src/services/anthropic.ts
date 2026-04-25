@@ -9,6 +9,7 @@ import { resolveModel } from '../models.js';
 import { runChatCore, streamChatCore, StreamContext, StreamChunk, ChatError } from './chat.js';
 import { consumeQuota } from './token.js';
 import { recordRequest } from './stats.js';
+import { stripMessagesPayload } from './strip-reminders.js';
 
 function json(res: http.ServerResponse, status: number, body: object) {
   res.writeHead(status, {
@@ -86,15 +87,18 @@ export async function handleAnthropicMessage(
       });
     }
 
-    const modelKey = resolveModel(body.model);
+    // Strip <system-reminder> blocks before forwarding (prevents false refusals)
+    const strippedBody = stripMessagesPayload(body);
+
+    const modelKey = resolveModel(strippedBody.model);
     if (!modelKey) {
       return json(res, 404, {
         type: 'error',
-        error: { type: 'not_found_error', message: `Model "${body.model}" not found` },
+        error: { type: 'not_found_error', message: `Model "${strippedBody.model}" not found` },
       });
     }
 
-    const messages = convertMessages(body);
+    const messages = convertMessages(strippedBody);
     const stream = !!body.stream;
     const msgId = 'msg_' + randomUUID().replace(/-/g, '').slice(0, 20);
 
@@ -140,49 +144,74 @@ export async function handleAnthropicMessage(
         blockIndex++;
       }
 
-      for await (const chunk of streamChatCore(messages, modelKey, authKey, { thinkingBudget })) {
-        if (!headersSent) {
-          res.writeHead(200, {
-            'Content-Type': 'text/event-stream',
-            'Cache-Control': 'no-cache',
-            'Connection': 'keep-alive',
-            'Access-Control-Allow-Origin': '*',
-          });
-          headersSent = true;
+      // Heartbeat: send ping events to keep downstream alive
+      const HEARTBEAT_MS = 30_000;
+      let lastDataAt = Date.now();
+      const heartbeatTimer = setInterval(() => {
+        if (!headersSent || res.writableEnded) { clearInterval(heartbeatTimer); return; }
+        const silenceMs = Date.now() - lastDataAt;
+        if (silenceMs >= 300_000) {
+          // Upstream silent for 5 min — send error and close
+          log.warn(`Anthropic SSE: upstream silent for ${Math.round(silenceMs / 1000)}s, closing`);
+          try {
+            sse(res, { type: 'error', error: { type: 'api_error', message: 'Upstream timeout — no data received.' } });
+          } catch { /* client gone */ }
+          clearInterval(heartbeatTimer);
+          try { res.end(); } catch { /* ignore */ }
+          return;
         }
-        ctx = chunk.ctx;
+        try { sse(res, { type: 'ping' }); } catch { /* client disconnected */ }
+      }, HEARTBEAT_MS);
 
-        if (!sentStart) {
-          sse(res, {
-            type: 'message_start',
-            message: {
-              id: msgId, type: 'message', role: 'assistant',
-              model: body.model, content: [],
-              usage: { input_tokens: ctx.promptTokens, output_tokens: 0 },
-            },
-          });
-          sentStart = true;
-        }
+      try {
+        for await (const chunk of streamChatCore(messages, modelKey, authKey, { thinkingBudget })) {
+          lastDataAt = Date.now();
+          if (!headersSent) {
+            res.writeHead(200, {
+              'Content-Type': 'text/event-stream',
+              'Cache-Control': 'no-cache',
+              'Connection': 'keep-alive',
+              'Access-Control-Allow-Origin': '*',
+            });
+            headersSent = true;
+          }
+          ctx = chunk.ctx;
 
-        // Thinking deltas → thinking block
-        if (chunk.thinking) {
-          fullThinking += chunk.thinking;
-          openThinkingBlock();
-          sse(res, {
-            type: 'content_block_delta', index: blockIndex,
-            delta: { type: 'thinking_delta', thinking: chunk.thinking },
-          });
-        }
+          if (!sentStart) {
+            sse(res, {
+              type: 'message_start',
+              message: {
+                id: msgId, type: 'message', role: 'assistant',
+                model: body.model, content: [],
+                stop_reason: null, stop_sequence: null,
+                usage: { input_tokens: ctx.promptTokens, output_tokens: 0 },
+              },
+            });
+            sentStart = true;
+          }
 
-        // Text deltas → text block (auto-closes thinking block first)
-        if (chunk.text) {
-          fullText += chunk.text;
-          openTextBlock();
-          sse(res, {
-            type: 'content_block_delta', index: blockIndex,
-            delta: { type: 'text_delta', text: chunk.text },
-          });
+          // Thinking deltas → thinking block
+          if (chunk.thinking) {
+            fullThinking += chunk.thinking;
+            openThinkingBlock();
+            sse(res, {
+              type: 'content_block_delta', index: blockIndex,
+              delta: { type: 'thinking_delta', thinking: chunk.thinking },
+            });
+          }
+
+          // Text deltas → text block (auto-closes thinking block first)
+          if (chunk.text) {
+            fullText += chunk.text;
+            openTextBlock();
+            sse(res, {
+              type: 'content_block_delta', index: blockIndex,
+              delta: { type: 'text_delta', text: chunk.text },
+            });
+          }
         }
+      } finally {
+        clearInterval(heartbeatTimer);
       }
 
       // Close any open blocks
@@ -198,8 +227,8 @@ export async function handleAnthropicMessage(
       const completionTokens = Math.ceil(fullText.length / 4);
       sse(res, {
         type: 'message_delta',
-        delta: { stop_reason: 'end_turn' },
-        usage: { output_tokens: completionTokens },
+        delta: { stop_reason: 'end_turn', stop_sequence: null },
+        usage: { input_tokens: ctx?.promptTokens ?? 0, output_tokens: completionTokens },
       });
       sse(res, { type: 'message_stop' });
       res.end();

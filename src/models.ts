@@ -98,7 +98,33 @@ for (const [alias, target] of Object.entries(ALIASES)) {
 
 export function resolveModel(name: string): string | null {
   const clean = name.replace(/\u001b\[[0-9;]*m/g, '').trim();
-  return _lookup.get(clean) || _lookup.get(clean.toLowerCase()) || null;
+
+  // 1. Direct match
+  const direct = _lookup.get(clean) || _lookup.get(clean.toLowerCase());
+  if (direct) return direct;
+
+  // 2. Strip date suffix: claude-opus-4-6-20251101 → claude-opus-4-6
+  const noDate = clean.replace(/-\d{8}$/, '');
+  if (noDate !== clean) {
+    const m = _lookup.get(noDate) || _lookup.get(noDate.toLowerCase());
+    if (m) return m;
+  }
+
+  // 3. Dash → dot: claude-opus-4-6 → claude-opus-4.6
+  const withDot = noDate.replace(/-(\d+)-(\d+)$/, '-$1.$2');
+  if (withDot !== noDate) {
+    const m = _lookup.get(withDot) || _lookup.get(withDot.toLowerCase());
+    if (m) return m;
+  }
+
+  // 4. Dot → dash: claude-opus-4.6 → claude-opus-4-6
+  const withDash = clean.replace(/(\d+)\.(\d+)/, '$1-$2');
+  if (withDash !== clean) {
+    const m = _lookup.get(withDash) || _lookup.get(withDash.toLowerCase());
+    if (m) return m;
+  }
+
+  return null;
 }
 
 export function getModelInfo(id: string): ModelInfo | null {
