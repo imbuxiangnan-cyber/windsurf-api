@@ -6,6 +6,8 @@
 
 import { createInterface } from 'readline';
 import { exec } from 'child_process';
+import { readFileSync, existsSync } from 'fs';
+import { join } from 'path';
 import { config, log } from './config.js';
 import { startLanguageServer, stopLanguageServer, detectLsBinary } from './core/langserver.js';
 import { destroyPool } from './core/grpc.js';
@@ -84,6 +86,25 @@ async function cmdStart(flags: Record<string, string>) {
   }
 
   initChannels();
+
+  // Auto-extract token from desktop app if no accounts exist
+  const channels = listChannels();
+  if (channels.length === 0) {
+    const desktopToken = extractDesktopToken();
+    if (desktopToken) {
+      addChannel(`desktop-${Date.now().toString(36)}`, desktopToken, 'pro');
+      log.info('Auto-extracted token from Windsurf desktop app');
+    }
+  } else {
+    // Refresh token from desktop app if available (only for auto-added single account)
+    const desktopToken = extractDesktopToken();
+    if (desktopToken && channels.length === 1 && channels[0].email?.startsWith('desktop-')) {
+      removeChannel(channels[0].id);
+      addChannel(`desktop-${Date.now().toString(36)}`, desktopToken, 'pro');
+      log.info('Refreshed token from Windsurf desktop app');
+    }
+  }
+
   initTokens();
   initStats();
 
@@ -159,14 +180,33 @@ async function cmdStart(flags: Record<string, string>) {
   process.on('SIGTERM', () => shutdown('SIGTERM'));
 }
 
+// ─── auto-extract token from desktop app ─────────────────
+
+function extractDesktopToken(): string | null {
+  try {
+    const appData = process.env.APPDATA || '';
+    const vscdb = join(appData, 'Windsurf', 'User', 'globalStorage', 'state.vscdb');
+    if (!existsSync(vscdb)) return null;
+    const buf = readFileSync(vscdb);
+    const str = buf.toString('utf-8');
+    const match = str.match(/apiKey":"(devin-session-token\$[^"]+)"/);
+    return match ? match[1] : null;
+  } catch { return null; }
+}
+
 // ─── add-account ────────────────────────────────────────
 
 async function cmdAddAccount(flags: Record<string, string>) {
-  const token = flags['token'] || flags['t'];
+  let token = flags['token'] || flags['t'];
+  if (!token && flags['auto'] !== undefined) {
+    token = extractDesktopToken() || '';
+    if (token) console.log('  ✓ Auto-extracted token from Windsurf desktop app');
+  }
   if (!token) {
     console.error('Usage: windsurf-api add-account --token <session_token> [--label <name>]');
+    console.error('       windsurf-api add-account --auto   (extract from desktop app)');
     console.error('');
-    console.error('How to get your token:');
+    console.error('How to get your token manually:');
     console.error('  1. Open Windsurf desktop app');
     console.error('  2. Open DevTools (F12)');
     console.error('  3. Application → Cookies → find "devin_session_token"');
@@ -205,45 +245,61 @@ async function cmdAuth(flags: Record<string, string>) {
   console.log('  Windsurf Account Authentication');
   console.log('  ─────────────────────────────────────\n');
 
-  console.log('  Step 1: Open Windsurf in your browser and log in\n');
+  // Try auto-extract first
+  const desktopToken = extractDesktopToken();
+  let cleanToken = '';
+  let finalLabel = '';
 
-  const autoOpen = flags['no-browser'] !== 'true';
-  if (autoOpen) {
-    console.log('  Opening https://windsurf.com ...');
-    openBrowser('https://windsurf.com');
-    console.log('');
+  if (desktopToken) {
+    console.log('  ✓ Found token from Windsurf desktop app!\n');
+    const useAuto = await prompt('  Use this token? (Y/n): ');
+    if (!useAuto || useAuto.toLowerCase() === 'y' || useAuto.toLowerCase() === 'yes') {
+      cleanToken = desktopToken;
+      finalLabel = `desktop-${Date.now().toString(36)}`;
+      console.log('  ✓ Using desktop app token\n');
+    }
   }
 
-  console.log('  Step 2: Get your session token');
-  console.log('  ┌──────────────────────────────────────────────┐');
-  console.log('  │  Option A: From browser cookies              │');
-  console.log('  │    1. Press F12 to open DevTools             │');
-  console.log('  │    2. Go to Application → Cookies            │');
-  console.log('  │    3. Find "devin_session_token"             │');
-  console.log('  │    4. Copy the value                         │');
-  console.log('  │                                              │');
-  console.log('  │  Option B: From Windsurf auth page           │');
-  console.log('  │    1. Go to windsurf.com account settings    │');
-  console.log('  │    2. Copy the auth/session token            │');
-  console.log('  └──────────────────────────────────────────────┘\n');
+  if (!cleanToken) {
+    console.log('  Step 1: Open Windsurf in your browser and log in\n');
 
-  const token = await prompt('  Paste your token here: ');
+    const autoOpen = flags['no-browser'] !== 'true';
+    if (autoOpen) {
+      console.log('  Opening https://windsurf.com ...');
+      openBrowser('https://windsurf.com');
+      console.log('');
+    }
 
-  if (!token) {
-    console.error('\n  ✗ No token provided. Aborted.\n');
-    process.exit(1);
+    console.log('  Step 2: Get your session token');
+    console.log('  ┌──────────────────────────────────────────────┐');
+    console.log('  │  Option A: From browser cookies              │');
+    console.log('  │    1. Press F12 to open DevTools             │');
+    console.log('  │    2. Go to Application → Cookies            │');
+    console.log('  │    3. Find "devin_session_token"             │');
+    console.log('  │    4. Copy the value                         │');
+    console.log('  │                                              │');
+    console.log('  │  Option B: From Windsurf auth page           │');
+    console.log('  │    1. Go to windsurf.com account settings    │');
+    console.log('  │    2. Copy the auth/session token            │');
+    console.log('  └──────────────────────────────────────────────┘\n');
+
+    const token = await prompt('  Paste your token here: ');
+
+    if (!token) {
+      console.error('\n  ✗ No token provided. Aborted.\n');
+      process.exit(1);
+    }
+
+    cleanToken = token.replace(/^['"]|['"]$/g, '').trim();
+
+    if (cleanToken.length < 10) {
+      console.error('\n  ✗ Token looks too short. Please check and try again.\n');
+      process.exit(1);
+    }
+
+    const label = await prompt('  Account label (press Enter for auto): ');
+    finalLabel = label || `account-${Date.now().toString(36)}`;
   }
-
-  // Clean up token — strip quotes, whitespace
-  const cleanToken = token.replace(/^['"]|['"]$/g, '').trim();
-
-  if (cleanToken.length < 10) {
-    console.error('\n  ✗ Token looks too short. Please check and try again.\n');
-    process.exit(1);
-  }
-
-  const label = await prompt('  Account label (press Enter for auto): ');
-  const finalLabel = label || `account-${Date.now().toString(36)}`;
 
   initChannels();
   const ch = addChannel(finalLabel, cleanToken, flags['tier'] || 'pro');
