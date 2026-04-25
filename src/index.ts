@@ -5,9 +5,10 @@
  */
 
 import { createInterface } from 'readline';
-import { exec } from 'child_process';
-import { readFileSync, existsSync } from 'fs';
+import { exec, execSync } from 'child_process';
+import { readFileSync, existsSync, mkdirSync, createWriteStream, chmodSync, unlinkSync } from 'fs';
 import { join } from 'path';
+import https from 'https';
 import { config, log } from './config.js';
 import { startLanguageServer, stopLanguageServer, detectLsBinary } from './core/langserver.js';
 import { destroyPool } from './core/grpc.js';
@@ -550,6 +551,174 @@ async function cmdLogout(flags: Record<string, string>) {
   console.log(`\n  ✓ ${channels.length} account(s) removed.\n`);
 }
 
+// ─── setup (download LS binary) ─────────────────────────
+
+function downloadFile(url: string, dest: string): Promise<void> {
+  return new Promise((resolve, reject) => {
+    const follow = (u: string, redirects = 0): void => {
+      if (redirects > 10) { reject(new Error('Too many redirects')); return; }
+      const mod = u.startsWith('https') ? https : require('http');
+      mod.get(u, { headers: { 'User-Agent': 'windsurf-api' } }, (res: any) => {
+        if (res.statusCode >= 300 && res.statusCode < 400 && res.headers.location) {
+          follow(res.headers.location, redirects + 1);
+          return;
+        }
+        if (res.statusCode !== 200) {
+          reject(new Error(`HTTP ${res.statusCode}`));
+          return;
+        }
+        const file = createWriteStream(dest);
+        res.pipe(file);
+        file.on('finish', () => { file.close(); resolve(); });
+        file.on('error', reject);
+      }).on('error', reject);
+    };
+    follow(url);
+  });
+}
+
+const WINDSURF_DOWNLOAD_URLS: Record<string, Record<string, string>> = {
+  win32: {
+    x64: 'https://windsurf-stable.codeiumdata.com/wVxQEIHkBsUPfSPOLiMFNmPG7Ho=/Windsurf-windows-x64-latest.exe',
+  },
+  linux: {
+    x64: 'https://windsurf-stable.codeiumdata.com/linux-x64/stable/latest',
+  },
+  darwin: {
+    arm64: 'https://windsurf-stable.codeiumdata.com/darwin-arm64/stable/latest',
+    x64: 'https://windsurf-stable.codeiumdata.com/darwin-x64/stable/latest',
+  },
+};
+
+async function cmdSetup() {
+  console.log(BANNER);
+  console.log('  Windsurf API Setup');
+  console.log('  ─────────────────────────────────────\n');
+
+  // Check if LS already exists
+  const existing = detectLsBinary();
+  if (existing) {
+    console.log(`  ✓ LS binary already found: ${existing}\n`);
+    console.log('  No setup needed. Run: windsurf-api start\n');
+    return;
+  }
+
+  const binDir = join(config.dataDir, 'bin');
+  if (!existsSync(binDir)) mkdirSync(binDir, { recursive: true });
+
+  const platform = process.platform;
+  const arch = process.arch;
+
+  let lsBinaryName = '';
+  if (platform === 'win32') lsBinaryName = 'language_server_windows_x64.exe';
+  else if (platform === 'darwin') lsBinaryName = arch === 'arm64' ? 'language_server_macos_arm' : 'language_server_macos_x64';
+  else lsBinaryName = 'language_server_linux_x64';
+
+  const lsDest = join(binDir, lsBinaryName);
+
+  if (existsSync(lsDest)) {
+    console.log(`  ✓ LS binary already exists: ${lsDest}\n`);
+    return;
+  }
+
+  console.log('  The Language Server binary is required to proxy API calls.');
+  console.log('  It is included in the Windsurf desktop app.\n');
+  console.log('  Options:\n');
+  console.log('  [1] Auto-download from Windsurf (may not work if URLs change)');
+  console.log('  [2] I\'ll download Windsurf desktop app manually\n');
+
+  const choice = await prompt('  Select (1): ') || '1';
+
+  if (choice === '1') {
+    console.log('\n  Downloading Windsurf package...');
+    console.log('  This may take a few minutes.\n');
+
+    try {
+      // Try direct CDN download
+      const urls = WINDSURF_DOWNLOAD_URLS[platform];
+      const url = urls?.[arch] || urls?.['x64'];
+
+      if (!url) {
+        throw new Error(`No download URL for ${platform}/${arch}`);
+      }
+
+      const tmpFile = join(binDir, `windsurf-download-${Date.now()}.tmp`);
+
+      console.log(`  Downloading from CDN...`);
+      try {
+        await downloadFile(url, tmpFile);
+        console.log('  Download complete. Extracting LS binary...');
+
+        // For Windows exe, we can try 7z extraction
+        if (platform === 'win32') {
+          try {
+            // Try using 7z if available
+            execSync(`7z e "${tmpFile}" -o"${binDir}" "resources/app/extensions/windsurf/bin/${lsBinaryName}" -y`, { timeout: 60000 });
+            console.log(`\n  ✓ LS binary extracted: ${lsDest}\n`);
+          } catch {
+            // Try using PowerShell Expand-Archive (won't work for exe, but try)
+            throw new Error('Auto-extraction not available. Please use option 2.');
+          }
+        } else {
+          // For Linux/Mac tar.gz
+          try {
+            execSync(`tar xf "${tmpFile}" -C "${binDir}" --strip-components=5 "*/extensions/windsurf/bin/${lsBinaryName}" 2>/dev/null || tar xf "${tmpFile}" -C "${binDir}" --wildcards "*/${lsBinaryName}"`, { timeout: 60000 });
+            chmodSync(lsDest, 0o755);
+            console.log(`\n  ✓ LS binary extracted: ${lsDest}\n`);
+          } catch {
+            throw new Error('Auto-extraction failed. Please use option 2.');
+          }
+        }
+
+        // Cleanup
+        try { unlinkSync(tmpFile); } catch { /* ignore */ }
+
+      } catch (dlErr: any) {
+        try { unlinkSync(tmpFile); } catch { /* ignore */ }
+        throw dlErr;
+      }
+
+    } catch (err: any) {
+      console.error(`\n  ✗ Auto-download failed: ${err.message}\n`);
+      showManualSetup(lsDest);
+      return;
+    }
+
+  } else {
+    showManualSetup(lsDest);
+    return;
+  }
+
+  console.log('  Next steps:');
+  console.log('    1. windsurf-api auth        (login)');
+  console.log('    2. windsurf-api start       (start server)\n');
+}
+
+function showManualSetup(targetPath: string) {
+  const platform = process.platform;
+  console.log('  Manual Setup:');
+  console.log('  ─────────────\n');
+  console.log('  1. Download Windsurf from: https://windsurf.com/download\n');
+
+  if (platform === 'win32') {
+    console.log('  2. Install Windsurf or extract the installer');
+    console.log('  3. Copy the LS binary from:');
+    console.log('     <Windsurf>\\resources\\app\\extensions\\windsurf\\bin\\language_server_windows_x64.exe');
+  } else if (platform === 'darwin') {
+    console.log('  2. Mount the DMG and copy Windsurf.app');
+    console.log('  3. Copy the LS binary from:');
+    console.log('     Windsurf.app/Contents/Resources/app/extensions/windsurf/bin/language_server_macos_*');
+  } else {
+    console.log('  2. Extract the tar.gz');
+    console.log('  3. Copy the LS binary from:');
+    console.log('     Windsurf/resources/app/extensions/windsurf/bin/language_server_linux_x64');
+  }
+
+  console.log(`\n  4. Copy it to: ${targetPath}`);
+  console.log(`\n  Or use --ls-path flag:`);
+  console.log(`     windsurf-api start --ls-path /path/to/language_server\n`);
+}
+
 // ─── help ───────────────────────────────────────────────
 
 function showHelp() {
@@ -589,6 +758,7 @@ function showHelp() {
   console.log('  logout                      Clear saved credentials');
   console.log('    --all, -a                 Clear all data including proxy');
   console.log('');
+  console.log('  setup                       Download Language Server binary');
   console.log('  check-usage                 Show usage statistics');
   console.log('  debug                       Show debug info');
   console.log('  help                        Show this help');
@@ -637,6 +807,10 @@ async function main() {
       break;
     case 'logout':
       await cmdLogout(flags);
+      break;
+    case 'setup':
+    case 'install':
+      await cmdSetup();
       break;
     case 'check-usage':
       cmdCheckUsage();

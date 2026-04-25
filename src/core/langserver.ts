@@ -60,6 +60,14 @@ export function detectLsBinary(): string | null {
   else if (platform === 'darwin') paths = LS_SEARCH_PATHS_MAC;
   else paths = LS_SEARCH_PATHS_LINUX;
 
+  // Also check dataDir/bin (downloaded via setup command)
+  const binDir = join(config.dataDir, 'bin');
+  if (platform === 'win32') paths.push(join(binDir, 'language_server_windows_x64.exe'));
+  else if (platform === 'darwin') {
+    paths.push(join(binDir, 'language_server_macos_arm'));
+    paths.push(join(binDir, 'language_server_macos_x64'));
+  } else paths.push(join(binDir, 'language_server_linux_x64'));
+
   for (const p of paths) {
     if (existsSync(p)) {
       log.info(`Auto-detected LS binary: ${p}`);
