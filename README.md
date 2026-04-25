@@ -24,7 +24,7 @@
 ### 安装
 
 ```bash
-git clone https://github.com/your-repo/windsurf-api.git
+git clone https://github.com/imbuxiangnan-cyber/windsurf-api.git
 cd windsurf-api
 npm install
 npm run build
@@ -33,8 +33,11 @@ npm run build
 ### 基本用法
 
 ```bash
-# 1. 添加账号（token 从 Windsurf DevTools → Cookies → devin_session_token 获取）
-npx windsurf-api add-account --token <your_devin_session_token>
+# 1. 交互式登录（推荐，自动打开浏览器）
+npx windsurf-api auth
+
+# 或直接用 token 添加
+npx windsurf-api add-account --token <devin_session_token>
 
 # 2. 启动服务
 npx windsurf-api start

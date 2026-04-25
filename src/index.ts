@@ -4,6 +4,8 @@
  * Modeled after copilot-api-plus CLI style.
  */
 
+import { createInterface } from 'readline';
+import { exec } from 'child_process';
 import { config, log } from './config.js';
 import { startLanguageServer, stopLanguageServer, detectLsBinary } from './core/langserver.js';
 import { startServer } from './server.js';
@@ -147,6 +149,86 @@ async function cmdAddAccount(flags: Record<string, string>) {
   console.log(`\n  ✓ Account added: ${ch.email} (${ch.id})\n`);
 }
 
+// ─── auth ───────────────────────────────────────────────
+
+function prompt(question: string): Promise<string> {
+  const rl = createInterface({ input: process.stdin, output: process.stdout });
+  return new Promise(resolve => {
+    rl.question(question, (answer: string) => {
+      rl.close();
+      resolve(answer.trim());
+    });
+  });
+}
+
+function openBrowser(url: string) {
+  const cmd = process.platform === 'win32' ? `start "" "${url}"`
+    : process.platform === 'darwin' ? `open "${url}"`
+    : `xdg-open "${url}"`;
+  exec(cmd, () => {});
+}
+
+async function cmdAuth(flags: Record<string, string>) {
+  console.log(BANNER);
+  console.log('  Windsurf Account Authentication');
+  console.log('  ─────────────────────────────────────\n');
+
+  console.log('  Step 1: Open Windsurf in your browser and log in\n');
+
+  const autoOpen = flags['no-browser'] !== 'true';
+  if (autoOpen) {
+    console.log('  Opening https://windsurf.com ...');
+    openBrowser('https://windsurf.com');
+    console.log('');
+  }
+
+  console.log('  Step 2: Get your session token');
+  console.log('  ┌──────────────────────────────────────────────┐');
+  console.log('  │  Option A: From browser cookies              │');
+  console.log('  │    1. Press F12 to open DevTools             │');
+  console.log('  │    2. Go to Application → Cookies            │');
+  console.log('  │    3. Find "devin_session_token"             │');
+  console.log('  │    4. Copy the value                         │');
+  console.log('  │                                              │');
+  console.log('  │  Option B: From Windsurf auth page           │');
+  console.log('  │    1. Go to windsurf.com account settings    │');
+  console.log('  │    2. Copy the auth/session token            │');
+  console.log('  └──────────────────────────────────────────────┘\n');
+
+  const token = await prompt('  Paste your token here: ');
+
+  if (!token) {
+    console.error('\n  ✗ No token provided. Aborted.\n');
+    process.exit(1);
+  }
+
+  // Clean up token — strip quotes, whitespace
+  const cleanToken = token.replace(/^['"]|['"]$/g, '').trim();
+
+  if (cleanToken.length < 10) {
+    console.error('\n  ✗ Token looks too short. Please check and try again.\n');
+    process.exit(1);
+  }
+
+  const label = await prompt('  Account label (press Enter for auto): ');
+  const finalLabel = label || `account-${Date.now().toString(36)}`;
+
+  initChannels();
+  const ch = addChannel(finalLabel, cleanToken, flags['tier'] || 'pro');
+
+  console.log('');
+  console.log('  ┌──────────────────────────────────────────────┐');
+  console.log(`  │  ✓ Account added successfully!               │`);
+  console.log(`  │                                              │`);
+  console.log(`  │  Label:  ${finalLabel.padEnd(37)}│`);
+  console.log(`  │  ID:     ${ch.id.padEnd(37)}│`);
+  console.log(`  │  Status: active                              │`);
+  console.log('  └──────────────────────────────────────────────┘');
+  console.log('');
+  console.log('  Next: run `windsurf-api start` to start the server');
+  console.log('');
+}
+
 // ─── list-accounts ──────────────────────────────────────
 
 function cmdListAccounts() {
@@ -155,7 +237,7 @@ function cmdListAccounts() {
 
   if (channels.length === 0) {
     console.log('\n  No accounts configured.');
-    console.log('  Add one with: windsurf-api add-account --email <email> --password <pw>\n');
+    console.log('  Add one with: windsurf-api auth\n');
     return;
   }
 
@@ -275,7 +357,10 @@ function showHelp() {
   console.log('    --claude-code, -c         Show Claude Code integration hints');
   console.log('    --verbose, -v             Enable debug logging');
   console.log('');
-  console.log('  add-account                 Add a Windsurf account');
+  console.log('  auth                        Interactive login (recommended)');
+  console.log('    --no-browser              Don\'t auto-open browser');
+  console.log('');
+  console.log('  add-account                 Add account directly with token');
   console.log('    --token, -t <token>       Session token (devin_session_token)');
   console.log('    --label, -l <label>       Account label');
   console.log('    --tier <tier>             Account tier (default: pro)');
@@ -293,10 +378,9 @@ function showHelp() {
   console.log('  LS_PORT, API_SERVER_URL, DEFAULT_MODEL, LOG_LEVEL, DATA_DIR');
   console.log('');
   console.log('Examples:');
+  console.log('  windsurf-api auth');
   console.log('  windsurf-api start');
   console.log('  windsurf-api start --claude-code');
-  console.log('  windsurf-api start --port 8080 --ls-path /opt/windsurf/language_server_linux_x64');
-  console.log('  windsurf-api add-account --token <your_devin_session_token>');
   console.log('  windsurf-api add-account --token <token> --label my-pro-account');
   console.log('  windsurf-api list-accounts');
   console.log('  windsurf-api check-usage');
@@ -312,6 +396,10 @@ async function main() {
   switch (command) {
     case 'start':
       await cmdStart(flags);
+      break;
+    case 'auth':
+    case 'login':
+      await cmdAuth(flags);
       break;
     case 'add-account':
       await cmdAddAccount(flags);
