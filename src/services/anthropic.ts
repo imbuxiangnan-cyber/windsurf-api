@@ -6,7 +6,9 @@ import http from 'http';
 import { randomUUID } from 'crypto';
 import { log } from '../config.js';
 import { resolveModel } from '../models.js';
-import { runChatCore, ChatError } from './chat.js';
+import { runChatCore, streamChatCore, StreamContext, ChatError } from './chat.js';
+import { consumeQuota } from './token.js';
+import { recordRequest } from './stats.js';
 
 function json(res: http.ServerResponse, status: number, body: object) {
   res.writeHead(status, {
@@ -81,7 +83,6 @@ export async function handleAnthropicMessage(
     }
 
     const messages = convertMessages(body);
-    const result = await runChatCore(messages, modelKey, authKey);
     const stream = !!body.stream;
     const msgId = 'msg_' + randomUUID().replace(/-/g, '').slice(0, 20);
 
@@ -93,61 +94,90 @@ export async function handleAnthropicMessage(
         'Access-Control-Allow-Origin': '*',
       });
 
-      sse(res, {
-        type: 'message_start',
-        message: {
-          id: msgId, type: 'message', role: 'assistant',
-          model: body.model, content: [],
-          usage: { input_tokens: result.promptTokens, output_tokens: 0 },
-        },
-      });
+      let sentStart = false;
+      let blockStarted = false;
+      let thinkingBlockStarted = false;
+      let textBlockIndex = 0;
+      let fullText = '';
+      let fullThinking = '';
+      let ctx!: StreamContext;
 
-      if (result.thinking) {
-        sse(res, {
-          type: 'content_block_start',
-          index: 0,
-          content_block: { type: 'thinking', thinking: '' },
-        });
-        sse(res, {
-          type: 'content_block_delta',
-          index: 0,
-          delta: { type: 'thinking_delta', thinking: result.thinking },
-        });
-        sse(res, { type: 'content_block_stop', index: 0 });
+      for await (const chunk of streamChatCore(messages, modelKey, authKey)) {
+        ctx = chunk.ctx;
 
-        sse(res, {
-          type: 'content_block_start',
-          index: 1,
-          content_block: { type: 'text', text: '' },
-        });
-        sse(res, {
-          type: 'content_block_delta',
-          index: 1,
-          delta: { type: 'text_delta', text: result.text },
-        });
-        sse(res, { type: 'content_block_stop', index: 1 });
-      } else {
-        sse(res, {
-          type: 'content_block_start',
-          index: 0,
-          content_block: { type: 'text', text: '' },
-        });
-        sse(res, {
-          type: 'content_block_delta',
-          index: 0,
-          delta: { type: 'text_delta', text: result.text },
-        });
+        if (!sentStart) {
+          sse(res, {
+            type: 'message_start',
+            message: {
+              id: msgId, type: 'message', role: 'assistant',
+              model: body.model, content: [],
+              usage: { input_tokens: ctx.promptTokens, output_tokens: 0 },
+            },
+          });
+          sentStart = true;
+        }
+
+        if (chunk.thinking) {
+          fullThinking += chunk.thinking;
+          if (!thinkingBlockStarted) {
+            sse(res, {
+              type: 'content_block_start',
+              index: 0,
+              content_block: { type: 'thinking', thinking: '' },
+            });
+            thinkingBlockStarted = true;
+            textBlockIndex = 1;
+          }
+          sse(res, {
+            type: 'content_block_delta',
+            index: 0,
+            delta: { type: 'thinking_delta', thinking: chunk.thinking },
+          });
+        }
+
+        if (chunk.text) {
+          fullText += chunk.text;
+          if (!blockStarted) {
+            if (thinkingBlockStarted) {
+              sse(res, { type: 'content_block_stop', index: 0 });
+            }
+            sse(res, {
+              type: 'content_block_start',
+              index: textBlockIndex,
+              content_block: { type: 'text', text: '' },
+            });
+            blockStarted = true;
+          }
+          sse(res, {
+            type: 'content_block_delta',
+            index: textBlockIndex,
+            delta: { type: 'text_delta', text: chunk.text },
+          });
+        }
+      }
+
+      if (blockStarted) {
+        sse(res, { type: 'content_block_stop', index: textBlockIndex });
+      } else if (thinkingBlockStarted) {
         sse(res, { type: 'content_block_stop', index: 0 });
       }
 
+      const completionTokens = Math.ceil(fullText.length / 4);
       sse(res, {
         type: 'message_delta',
         delta: { stop_reason: 'end_turn' },
-        usage: { output_tokens: result.completionTokens },
+        usage: { output_tokens: completionTokens },
       });
       sse(res, { type: 'message_stop' });
       res.end();
+
+      if (ctx) {
+        const tokensUsed = ctx.promptTokens + completionTokens;
+        consumeQuota(ctx.authKey, tokensUsed);
+        recordRequest({ model: ctx.modelKey, channelId: ctx.channel.id, tokensUsed });
+      }
     } else {
+      const result = await runChatCore(messages, modelKey, authKey);
       const content: any[] = [];
       if (result.thinking) {
         content.push({ type: 'thinking', thinking: result.thinking });
@@ -166,20 +196,25 @@ export async function handleAnthropicMessage(
     }
   } catch (err: any) {
     if (err instanceof ChatError) {
-      json(res, err.statusCode, {
-        type: 'error',
-        error: {
-          type: err.statusCode === 401 ? 'authentication_error' :
-                err.statusCode === 429 ? 'rate_limit_error' : 'api_error',
-          message: err.message,
-        },
-      });
+      if (!res.headersSent) {
+        json(res, err.statusCode, {
+          type: 'error',
+          error: {
+            type: err.statusCode === 401 ? 'authentication_error' :
+                  err.statusCode === 429 ? 'rate_limit_error' : 'api_error',
+            message: err.message,
+          },
+        });
+      }
     } else {
       log.error('Anthropic API error:', err.message);
-      json(res, 500, {
-        type: 'error',
-        error: { type: 'api_error', message: err.message },
-      });
+      if (!res.headersSent) {
+        json(res, 500, {
+          type: 'error',
+          error: { type: 'api_error', message: err.message },
+        });
+      }
     }
+    if (res.headersSent && !res.writableEnded) res.end();
   }
 }
