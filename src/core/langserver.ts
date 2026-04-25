@@ -3,9 +3,9 @@
  */
 
 import { spawn, execSync } from 'child_process';
-import { existsSync, mkdirSync, readdirSync, unlinkSync } from 'fs';
-import { join } from 'path';
-import { tmpdir } from 'os';
+import { existsSync, mkdirSync, readdirSync, unlinkSync, readFileSync, statSync } from 'fs';
+import { join, dirname } from 'path';
+import { tmpdir, homedir } from 'os';
 import http2 from 'http2';
 import { config, log } from '../config.js';
 
@@ -14,7 +14,9 @@ const DEFAULT_CSRF = 'windsurf-api-csrf-token';
 
 let _process: ReturnType<typeof spawn> | null = null;
 let _port = DEFAULT_PORT;
+let _csrfToken = DEFAULT_CSRF;
 let _ready = false;
+let _usingDesktopLs = false;
 
 function getWinSearchPaths(): string[] {
   const paths: string[] = [];
@@ -107,12 +109,105 @@ function cleanupPreviousLs(port: number): void {
   } catch { /* ignore */ }
 }
 
+// ─── Desktop LS detection ──────────────────────────────
+
+function findDesktopLsPort(): { port: number; csrf: string } | null {
+  try {
+    const appData = process.env.APPDATA || (process.platform === 'darwin'
+      ? join(homedir(), 'Library', 'Application Support') : join(homedir(), '.config'));
+    const logBase = join(appData, 'Windsurf', 'logs');
+    if (!existsSync(logBase)) return null;
+
+    // Find the most recent log directory
+    const dirs = readdirSync(logBase)
+      .filter(d => { try { return statSync(join(logBase, d)).isDirectory(); } catch { return false; } })
+      .sort().reverse();
+
+    for (const dir of dirs.slice(0, 3)) {
+      // Look for Windsurf.log in exthost subdirs
+      const extPattern = join(logBase, dir);
+      const logFile = findFile(extPattern, 'Windsurf.log', 4);
+      if (!logFile) continue;
+
+      const content = readFileSync(logFile, 'utf-8');
+      // Extract port: "Language server listening on ... port at XXXXX"
+      const portMatch = content.match(/listening on.*port.*?(\d{4,5})/i)
+        || content.match(/manager_port.*?(\d{4,5})/i)
+        || content.match(/connected.*language server.*?(\d{4,5})/i);
+      if (!portMatch) continue;
+
+      const port = parseInt(portMatch[1], 10);
+      if (port < 1024 || port > 65535) continue;
+
+      // Try to find CSRF token from the same log or config
+      const csrfMatch = content.match(/csrf[_-]token["=:\s]+([a-zA-Z0-9_-]{10,})/i);
+      const csrf = csrfMatch ? csrfMatch[1] : '';
+
+      return { port, csrf };
+    }
+  } catch (e: any) {
+    log.debug('Desktop LS detection failed:', e.message);
+  }
+  return null;
+}
+
+function findFile(dir: string, name: string, maxDepth: number): string | null {
+  if (maxDepth <= 0) return null;
+  try {
+    for (const entry of readdirSync(dir)) {
+      const full = join(dir, entry);
+      if (entry === name && !statSync(full).isDirectory()) return full;
+      if (statSync(full).isDirectory()) {
+        const found = findFile(full, name, maxDepth - 1);
+        if (found) return found;
+      }
+    }
+  } catch { /* permission denied etc */ }
+  return null;
+}
+
+async function tryConnectDesktopLs(): Promise<{ port: number; csrfToken: string } | null> {
+  const info = findDesktopLsPort();
+  if (!info) return null;
+
+  log.info(`Found desktop LS on port ${info.port}, testing connection...`);
+
+  // Try connecting with found CSRF, then empty, then default
+  const csrfCandidates = [info.csrf, '', DEFAULT_CSRF].filter(Boolean);
+  // Dedup
+  const unique = [...new Set(csrfCandidates)];
+
+  for (const csrf of unique) {
+    try {
+      await new Promise<void>((resolve, reject) => {
+        const client = http2.connect(`http://localhost:${info.port}`);
+        const t = setTimeout(() => { client.close(); reject(new Error('timeout')); }, 3000);
+        client.on('connect', () => { clearTimeout(t); client.close(); resolve(); });
+        client.on('error', () => { clearTimeout(t); reject(new Error('connect error')); });
+      });
+      log.info(`Desktop LS reachable on port ${info.port} — reusing (saves ~400MB RAM)`);
+      return { port: info.port, csrfToken: csrf };
+    } catch { /* try next */ }
+  }
+  return null;
+}
+
 export async function startLanguageServer(opts: {
   binaryPath: string;
   port?: number;
   apiServerUrl?: string;
 }): Promise<{ port: number; csrfToken: string }> {
-  if (_ready) return { port: _port, csrfToken: DEFAULT_CSRF };
+  if (_ready) return { port: _port, csrfToken: _csrfToken };
+
+  // Try reusing desktop client's LS first
+  const desktop = await tryConnectDesktopLs();
+  if (desktop) {
+    _port = desktop.port;
+    _csrfToken = desktop.csrfToken;
+    _ready = true;
+    _usingDesktopLs = true;
+    return desktop;
+  }
 
   const binaryPath = opts.binaryPath;
   const port = opts.port || DEFAULT_PORT;
@@ -184,6 +279,7 @@ export async function startLanguageServer(opts: {
         client.on('error', () => { clearTimeout(t); reject(new Error('connect error')); });
       });
       _ready = true;
+      _csrfToken = DEFAULT_CSRF;
       log.info(`LS ready on port ${port}`);
       return { port, csrfToken: DEFAULT_CSRF };
     } catch { /* retry */ }
@@ -192,6 +288,12 @@ export async function startLanguageServer(opts: {
 }
 
 export function stopLanguageServer(): void {
+  if (_usingDesktopLs) {
+    log.info('Detaching from desktop LS (not killing it)');
+    _ready = false;
+    _usingDesktopLs = false;
+    return;
+  }
   if (_process) {
     try { _process.kill('SIGKILL'); } catch { /* ignore */ }
     _process = null;
@@ -200,5 +302,6 @@ export function stopLanguageServer(): void {
 }
 
 export function getLsPort(): number { return _port; }
-export function getCsrfToken(): string { return DEFAULT_CSRF; }
+export function getCsrfToken(): string { return _csrfToken; }
 export function isLsReady(): boolean { return _ready; }
+export function isUsingDesktopLs(): boolean { return _usingDesktopLs; }
