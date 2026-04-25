@@ -1,0 +1,269 @@
+<!DOCTYPE html>
+<html lang="zh-CN">
+<head>
+<meta charset="UTF-8">
+<meta name="viewport" content="width=device-width, initial-scale=1.0">
+<title>Windsurf API Dashboard</title>
+<style>
+  * { margin: 0; padding: 0; box-sizing: border-box; }
+  body { font-family: -apple-system, BlinkMacSystemFont, 'Segoe UI', Roboto, sans-serif; background: #0f172a; color: #e2e8f0; min-height: 100vh; }
+  .container { max-width: 1200px; margin: 0 auto; padding: 20px; }
+  h1 { font-size: 1.8rem; margin-bottom: 8px; background: linear-gradient(135deg, #38bdf8, #818cf8); -webkit-background-clip: text; -webkit-text-fill-color: transparent; }
+  .subtitle { color: #64748b; margin-bottom: 24px; }
+  .stats-grid { display: grid; grid-template-columns: repeat(auto-fit, minmax(200px, 1fr)); gap: 16px; margin-bottom: 24px; }
+  .stat-card { background: #1e293b; border-radius: 12px; padding: 20px; border: 1px solid #334155; }
+  .stat-card .label { color: #94a3b8; font-size: 0.85rem; margin-bottom: 4px; }
+  .stat-card .value { font-size: 1.6rem; font-weight: 700; color: #f1f5f9; }
+  .stat-card .value.green { color: #4ade80; }
+  .stat-card .value.yellow { color: #fbbf24; }
+  .stat-card .value.red { color: #f87171; }
+  .section { background: #1e293b; border-radius: 12px; padding: 20px; border: 1px solid #334155; margin-bottom: 24px; }
+  .section h2 { font-size: 1.2rem; margin-bottom: 16px; color: #f1f5f9; }
+  table { width: 100%; border-collapse: collapse; }
+  th { text-align: left; padding: 10px 12px; color: #94a3b8; font-weight: 600; font-size: 0.85rem; text-transform: uppercase; border-bottom: 1px solid #334155; }
+  td { padding: 10px 12px; border-bottom: 1px solid #1e293b; font-size: 0.9rem; }
+  tr:hover td { background: #263244; }
+  .badge { padding: 3px 10px; border-radius: 20px; font-size: 0.75rem; font-weight: 600; }
+  .badge.active { background: #064e3b; color: #4ade80; }
+  .badge.error { background: #450a0a; color: #f87171; }
+  .badge.disabled { background: #3f3f46; color: #a1a1aa; }
+  .btn { padding: 6px 14px; border-radius: 8px; border: none; cursor: pointer; font-size: 0.85rem; font-weight: 500; transition: all 0.15s; }
+  .btn-primary { background: #3b82f6; color: #fff; }
+  .btn-primary:hover { background: #2563eb; }
+  .btn-danger { background: #dc2626; color: #fff; }
+  .btn-danger:hover { background: #b91c1c; }
+  .btn-sm { padding: 4px 10px; font-size: 0.8rem; }
+  .form-row { display: flex; gap: 10px; margin-bottom: 12px; flex-wrap: wrap; }
+  .form-row input { background: #0f172a; border: 1px solid #334155; border-radius: 8px; padding: 8px 12px; color: #e2e8f0; font-size: 0.9rem; flex: 1; min-width: 150px; }
+  .form-row input:focus { outline: none; border-color: #3b82f6; }
+  .tabs { display: flex; gap: 4px; margin-bottom: 16px; }
+  .tab { padding: 8px 16px; border-radius: 8px; cursor: pointer; font-size: 0.9rem; background: transparent; border: 1px solid #334155; color: #94a3b8; }
+  .tab.active { background: #3b82f6; border-color: #3b82f6; color: #fff; }
+  .tab:hover:not(.active) { border-color: #64748b; color: #e2e8f0; }
+  .panel { display: none; }
+  .panel.active { display: block; }
+  .password-gate { display: flex; flex-direction: column; align-items: center; justify-content: center; min-height: 80vh; }
+  .password-gate input { width: 300px; margin-bottom: 12px; }
+  .empty { text-align: center; color: #64748b; padding: 40px; }
+  .api-info { background: #0f172a; border-radius: 8px; padding: 12px 16px; margin-bottom: 16px; font-family: 'Fira Code', monospace; font-size: 0.85rem; color: #94a3b8; }
+  .api-info code { color: #38bdf8; }
+</style>
+</head>
+<body>
+<div class="container" id="app">
+  <div id="gate" class="password-gate" style="display:none">
+    <h1>Windsurf API</h1>
+    <p class="subtitle" style="margin:16px 0">Enter dashboard password</p>
+    <div class="form-row" style="justify-content:center">
+      <input type="password" id="pw-input" placeholder="Password" style="flex:none;width:300px" onkeydown="if(event.key==='Enter')login()">
+      <button class="btn btn-primary" onclick="login()">Enter</button>
+    </div>
+  </div>
+
+  <div id="main" style="display:none">
+    <h1>Windsurf API Dashboard</h1>
+    <p class="subtitle">Windsurf → OpenAI / Anthropic API Proxy</p>
+
+    <div class="stats-grid" id="stats-grid"></div>
+
+    <div class="tabs">
+      <div class="tab active" onclick="switchTab('channels')">Channels</div>
+      <div class="tab" onclick="switchTab('tokens')">API Keys</div>
+      <div class="tab" onclick="switchTab('usage')">Usage</div>
+    </div>
+
+    <div id="panel-channels" class="panel active">
+      <div class="section">
+        <h2>Add Account</h2>
+        <div class="form-row">
+          <input id="ch-email" placeholder="Email">
+          <input id="ch-password" type="password" placeholder="Password">
+          <button class="btn btn-primary" onclick="addChannelByLogin()">Login & Add</button>
+        </div>
+        <div class="form-row">
+          <input id="ch-email2" placeholder="Email">
+          <input id="ch-apikey" placeholder="Session Token (apiKey)">
+          <button class="btn btn-primary" onclick="addChannelByKey()">Direct Add</button>
+        </div>
+      </div>
+      <div class="section">
+        <h2>Accounts</h2>
+        <table><thead><tr><th>ID</th><th>Email</th><th>Status</th><th>Tier</th><th>RPM</th><th>Errors</th><th>Action</th></tr></thead>
+        <tbody id="ch-table"></tbody></table>
+        <div id="ch-empty" class="empty" style="display:none">No accounts yet. Add one above.</div>
+      </div>
+    </div>
+
+    <div id="panel-tokens" class="panel">
+      <div class="section">
+        <h2>Create API Key</h2>
+        <div class="form-row">
+          <input id="tk-name" placeholder="Key name (e.g. claude-code)">
+          <button class="btn btn-primary" onclick="createApiKey()">Create</button>
+        </div>
+      </div>
+      <div class="section">
+        <h2>API Keys</h2>
+        <table><thead><tr><th>ID</th><th>Name</th><th>Key</th><th>Status</th><th>Requests</th><th>Action</th></tr></thead>
+        <tbody id="tk-table"></tbody></table>
+        <div id="tk-empty" class="empty" style="display:none">No API keys. Create one above.</div>
+      </div>
+    </div>
+
+    <div id="panel-usage" class="panel">
+      <div class="section">
+        <h2>Usage Statistics</h2>
+        <div id="usage-content"></div>
+      </div>
+    </div>
+
+    <div class="api-info">
+      API Endpoints: <code>POST /v1/chat/completions</code> &nbsp;|&nbsp; <code>POST /v1/messages</code> &nbsp;|&nbsp; <code>GET /v1/models</code>
+    </div>
+  </div>
+</div>
+
+<script>
+let password = '';
+const BASE = location.origin;
+
+function headers() {
+  return { 'Content-Type': 'application/json', 'X-Dashboard-Password': password };
+}
+
+async function api(path, opts = {}) {
+  const res = await fetch(BASE + path, { headers: headers(), ...opts });
+  return res.json();
+}
+
+function login() {
+  password = document.getElementById('pw-input').value;
+  load();
+}
+
+async function load() {
+  try {
+    const data = await api('/dashboard/api/overview');
+    if (data.error === 'Unauthorized') {
+      document.getElementById('gate').style.display = 'flex';
+      document.getElementById('main').style.display = 'none';
+      return;
+    }
+    document.getElementById('gate').style.display = 'none';
+    document.getElementById('main').style.display = 'block';
+
+    document.getElementById('stats-grid').innerHTML = `
+      <div class="stat-card"><div class="label">Language Server</div><div class="value ${data.lsReady ? 'green' : 'red'}">${data.lsReady ? 'Ready' : 'Offline'}</div></div>
+      <div class="stat-card"><div class="label">Accounts</div><div class="value">${data.channels?.length || 0}</div></div>
+      <div class="stat-card"><div class="label">Today Requests</div><div class="value">${data.todayRequests || 0}</div></div>
+      <div class="stat-card"><div class="label">Total Requests</div><div class="value">${data.totalRequests || 0}</div></div>
+    `;
+    renderChannels(data.channels || []);
+  } catch (e) {
+    document.getElementById('gate').style.display = 'flex';
+    document.getElementById('main').style.display = 'none';
+  }
+}
+
+function renderChannels(channels) {
+  const tbody = document.getElementById('ch-table');
+  if (!channels.length) { tbody.innerHTML = ''; document.getElementById('ch-empty').style.display = 'block'; return; }
+  document.getElementById('ch-empty').style.display = 'none';
+  tbody.innerHTML = channels.map(c => `<tr>
+    <td>${c.id}</td><td>${c.email}</td>
+    <td><span class="badge ${c.status}">${c.status}</span></td>
+    <td>${c.tier}</td><td>${c.rpm}</td><td>${c.errorCount}</td>
+    <td><button class="btn btn-danger btn-sm" onclick="deleteChannel('${c.id}')">Delete</button></td>
+  </tr>`).join('');
+}
+
+async function addChannelByLogin() {
+  const email = document.getElementById('ch-email').value;
+  const pw = document.getElementById('ch-password').value;
+  if (!email || !pw) return alert('Enter email and password');
+  const res = await api('/dashboard/api/channels', { method: 'POST', body: JSON.stringify({ email, password: pw }) });
+  if (res.error) return alert(res.error);
+  document.getElementById('ch-email').value = '';
+  document.getElementById('ch-password').value = '';
+  load();
+}
+
+async function addChannelByKey() {
+  const email = document.getElementById('ch-email2').value;
+  const apiKey = document.getElementById('ch-apikey').value;
+  if (!email || !apiKey) return alert('Enter email and session token');
+  const res = await api('/dashboard/api/channels', { method: 'POST', body: JSON.stringify({ email, apiKey }) });
+  if (res.error) return alert(res.error);
+  document.getElementById('ch-email2').value = '';
+  document.getElementById('ch-apikey').value = '';
+  load();
+}
+
+async function deleteChannel(id) {
+  if (!confirm('Remove this account?')) return;
+  await api(`/dashboard/api/channels/${id}`, { method: 'DELETE' });
+  load();
+}
+
+async function createApiKey() {
+  const name = document.getElementById('tk-name').value || 'default';
+  const res = await api('/dashboard/api/tokens', { method: 'POST', body: JSON.stringify({ name }) });
+  if (res.token) {
+    alert('API Key created: ' + res.token.key);
+    document.getElementById('tk-name').value = '';
+    loadTokens();
+  }
+}
+
+async function loadTokens() {
+  const data = await api('/dashboard/api/tokens');
+  const tokens = data.tokens || [];
+  const tbody = document.getElementById('tk-table');
+  if (!tokens.length) { tbody.innerHTML = ''; document.getElementById('tk-empty').style.display = 'block'; return; }
+  document.getElementById('tk-empty').style.display = 'none';
+  tbody.innerHTML = tokens.map(t => `<tr>
+    <td>${t.id}</td><td>${t.name}</td>
+    <td style="font-family:monospace;font-size:0.8rem">${t.key}</td>
+    <td><span class="badge ${t.status}">${t.status}</span></td>
+    <td>${t.reqCount}</td>
+    <td><button class="btn btn-danger btn-sm" onclick="deleteToken('${t.id}')">Delete</button></td>
+  </tr>`).join('');
+}
+
+async function deleteToken(id) {
+  if (!confirm('Delete this API key?')) return;
+  await api(`/dashboard/api/tokens/${id}`, { method: 'DELETE' });
+  loadTokens();
+}
+
+async function loadUsage() {
+  const data = await api('/dashboard/api/stats');
+  const el = document.getElementById('usage-content');
+  if (!data.daily || !data.daily.length) {
+    el.innerHTML = '<div class="empty">No usage data yet.</div>';
+    return;
+  }
+  let html = `<p style="margin-bottom:12px">Total: <strong>${data.totalRequests}</strong> requests, <strong>${data.totalTokens}</strong> tokens</p>`;
+  html += '<table><thead><tr><th>Date</th><th>Requests</th><th>Tokens</th><th>Top Model</th></tr></thead><tbody>';
+  for (const d of data.daily.slice().reverse()) {
+    const topModel = Object.entries(d.byModel || {}).sort((a,b) => (b[1] as number) - (a[1] as number))[0];
+    html += `<tr><td>${d.date}</td><td>${d.requests}</td><td>${d.tokens}</td><td>${topModel ? topModel[0] : '-'}</td></tr>`;
+  }
+  html += '</tbody></table>';
+  el.innerHTML = html;
+}
+
+function switchTab(name) {
+  document.querySelectorAll('.tab').forEach(t => t.classList.remove('active'));
+  document.querySelectorAll('.panel').forEach(p => p.classList.remove('active'));
+  event.target.classList.add('active');
+  document.getElementById('panel-' + name).classList.add('active');
+  if (name === 'tokens') loadTokens();
+  if (name === 'usage') loadUsage();
+}
+
+// Init
+load();
+</script>
+</body>
+</html>

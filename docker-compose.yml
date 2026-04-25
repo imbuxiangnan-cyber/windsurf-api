@@ -1,0 +1,19 @@
+version: "3.8"
+
+services:
+  windsurf-api:
+    build: .
+    ports:
+      - "4000:4000"
+    volumes:
+      - ./data:/app/data
+      - ./ls-binary:/opt/windsurf
+    environment:
+      - PORT=4000
+      - API_KEY=${API_KEY:-}
+      - DASHBOARD_PASSWORD=${DASHBOARD_PASSWORD:-}
+      - LS_BINARY_PATH=/opt/windsurf/language_server_linux_x64
+      - LS_PORT=42100
+      - LOG_LEVEL=info
+      - DATA_DIR=/app/data
+    restart: unless-stopped

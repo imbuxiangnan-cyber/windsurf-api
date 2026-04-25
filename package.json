@@ -1,0 +1,36 @@
+{
+  "name": "windsurf-api",
+  "version": "1.0.0",
+  "description": "Turn your Windsurf subscription into an OpenAI/Anthropic-compatible API server",
+  "type": "module",
+  "license": "MIT",
+  "bin": {
+    "windsurf-api": "./dist/index.js"
+  },
+  "keywords": [
+    "windsurf",
+    "openai",
+    "anthropic",
+    "api-proxy",
+    "claude",
+    "gpt",
+    "llm"
+  ],
+  "files": [
+    "dist/**/*"
+  ],
+  "scripts": {
+    "build": "tsc",
+    "dev": "tsc --watch",
+    "start": "node dist/index.js start",
+    "prepublishOnly": "npm run build",
+    "postbuild": "node -e \"const fs=require('fs');const p='dist/index.js';const c=fs.readFileSync(p,'utf8');if(!c.startsWith('#!')){fs.writeFileSync(p,'#!/usr/bin/env node\\n'+c)}\" && node -e \"const fs=require('fs');const s='src/dashboard',d='dist/dashboard';if(!fs.existsSync(d))fs.mkdirSync(d,{recursive:true});fs.readdirSync(s).forEach(f=>fs.copyFileSync(s+'/'+f,d+'/'+f))\""
+  },
+  "devDependencies": {
+    "@types/node": "^20.0.0",
+    "typescript": "^5.4.0"
+  },
+  "engines": {
+    "node": ">=20"
+  }
+}
