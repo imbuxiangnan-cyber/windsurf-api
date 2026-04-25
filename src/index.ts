@@ -119,10 +119,24 @@ async function cmdStart(flags: Record<string, string>) {
 
   // Claude Code integration hint
   if (claudeCode) {
-    console.log('\n  Claude Code integration:');
-    console.log(`    export ANTHROPIC_BASE_URL=http://localhost:${port}`);
-    console.log('    export ANTHROPIC_API_KEY=sk-any');
-    console.log('    claude\n');
+    console.log('\n  ┌──────────────────────────────────────────────┐');
+    console.log('  │  Claude Code Integration                     │');
+    console.log('  ├──────────────────────────────────────────────┤');
+    console.log('  │  Option A: Environment variables             │');
+    console.log(`  │    export ANTHROPIC_BASE_URL=http://localhost:${port}`);
+    console.log('  │    export ANTHROPIC_API_KEY=sk-any           │');
+    console.log('  │    claude                                    │');
+    console.log('  │                                              │');
+    console.log('  │  Option B: .claude/settings.json             │');
+    console.log('  │    {                                         │');
+    console.log('  │      "env": {                                │');
+    console.log(`  │        "ANTHROPIC_BASE_URL": "http://localhost:${port}",`);
+    console.log('  │        "ANTHROPIC_AUTH_TOKEN": "dummy",      │');
+    console.log('  │        "ANTHROPIC_MODEL": "claude-sonnet-4", │');
+    console.log('  │        "API_TIMEOUT_MS": "3000000"           │');
+    console.log('  │      }                                       │');
+    console.log('  │    }                                         │');
+    console.log('  └──────────────────────────────────────────────┘\n');
   }
 
   let shuttingDown = false;

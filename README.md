@@ -112,14 +112,40 @@ curl http://localhost:4000/v1/models
 
 ## 💻 Claude Code 集成
 
+### 自动配置（推荐）
+
 ```bash
-# 设置环境变量
+# 启动时带 --claude-code 自动显示集成命令
+npx windsurf-api start --claude-code
+```
+
+### 手动配置
+
+在项目根目录创建 `.claude/settings.json`：
+
+```json
+{
+  "env": {
+    "ANTHROPIC_BASE_URL": "http://localhost:4000",
+    "ANTHROPIC_AUTH_TOKEN": "dummy",
+    "ANTHROPIC_MODEL": "claude-sonnet-4",
+    "ANTHROPIC_SMALL_FAST_MODEL": "gpt-4.1",
+    "API_TIMEOUT_MS": "3000000",
+    "CLAUDE_CODE_DISABLE_NONESSENTIAL_TRAFFIC": "1",
+    "DISABLE_NON_ESSENTIAL_MODEL_CALLS": "1"
+  }
+}
+```
+
+或通过环境变量：
+
+```bash
 export ANTHROPIC_BASE_URL=http://localhost:4000
 export ANTHROPIC_API_KEY=sk-your-api-key
-
-# 启动 Claude Code
 claude
 ```
+
+> **提示**：`ANTHROPIC_AUTH_TOKEN` 可以是任意值（如 `dummy`），只要你没有设置 `--api-key`。如果设置了 API Key，则填写对应的 Key。
 
 ## 🖥 Dashboard
 
