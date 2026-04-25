@@ -49,6 +49,10 @@ export class WindsurfClient {
   private trajectoryId: string | null = null;
   private static _globalWarmupDone = false;
 
+  static resetWarmup(): void {
+    WindsurfClient._globalWarmupDone = false;
+  }
+
   constructor(apiKey: string, port: number, csrfToken: string, sessionId?: string) {
     this.apiKey = apiKey;
     this.port = port;

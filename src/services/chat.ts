@@ -11,7 +11,7 @@ import { pickChannel, markChannelError, markChannelSuccess } from './channel.js'
 import { Channel } from '../types.js';
 import { validateToken, isModelAllowedForToken, consumeQuota } from './token.js';
 import { recordRequest } from './stats.js';
-import { WindsurfClient, ChatChunk } from '../core/client.js';
+import { WindsurfClient } from '../core/client.js';
 import { getLsPort, getCsrfToken } from '../core/langserver.js';
 import { applyMapping, waitForConcurrency, releaseConcurrency } from './routing.js';
 
@@ -197,13 +197,7 @@ export async function handleChatCompletion(
     const created = Math.floor(Date.now() / 1000);
 
     if (stream) {
-      res.writeHead(200, {
-        'Content-Type': 'text/event-stream',
-        'Cache-Control': 'no-cache',
-        'Connection': 'keep-alive',
-        'Access-Control-Allow-Origin': '*',
-      });
-
+      let headersSent = false;
       let sentRole = false;
       let fullText = '';
       let ctx!: StreamContext;
@@ -211,6 +205,15 @@ export async function handleChatCompletion(
       // Extract thinking budget: OpenAI uses reasoning_effort or custom header
       const thinkingBudget = (body as any).thinking_budget || 128000;
       for await (const chunk of streamChatCore(body.messages, modelKey, authKey, { thinkingBudget })) {
+        if (!headersSent) {
+          res.writeHead(200, {
+            'Content-Type': 'text/event-stream',
+            'Cache-Control': 'no-cache',
+            'Connection': 'keep-alive',
+            'Access-Control-Allow-Origin': '*',
+          });
+          headersSent = true;
+        }
         ctx = chunk.ctx;
         if (!sentRole) {
           sse(res, {

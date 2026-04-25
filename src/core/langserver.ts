@@ -8,6 +8,7 @@ import { join } from 'path';
 import { tmpdir } from 'os';
 import http2 from 'http2';
 import { config, log } from '../config.js';
+import { WindsurfClient } from './client.js';
 
 const DEFAULT_PORT = 42100;
 const DEFAULT_CSRF = 'windsurf-api-csrf-token';
@@ -16,7 +17,7 @@ let _process: ReturnType<typeof spawn> | null = null;
 let _port = DEFAULT_PORT;
 let _csrfToken = DEFAULT_CSRF;
 let _ready = false;
-let _usingDesktopLs = false;
+let _reusingLs = false;
 let _restartCount = 0;
 
 function getWinSearchPaths(): string[] {
@@ -81,23 +82,33 @@ export function detectLsBinary(): string | null {
 }
 
 function cleanupPreviousLs(port: number): void {
-  // Kill residual language_server processes
+  // Only kill LS processes that WE previously started (check state file for PID)
+  // NEVER kill all LS processes — the desktop client uses one too
+  const prevState = loadOwnLsState();
+  if (prevState?.pid) {
+    try {
+      log.info(`Killing our previous LS process: PID ${prevState.pid}`);
+      if (process.platform === 'win32') {
+        execSync(`taskkill /PID ${prevState.pid} /F /T`, { timeout: 5000 });
+      } else {
+        process.kill(prevState.pid, 'SIGKILL');
+      }
+    } catch { /* already dead */ }
+    clearOwnLsState();
+  }
+
+  // Also check if something is listening on our target port
   try {
     if (process.platform === 'win32') {
-      const out = execSync('tasklist /FI "IMAGENAME eq language_server_windows_x64.exe" /FO CSV /NH', { encoding: 'utf-8', timeout: 5000 });
-      const pids: number[] = [];
-      for (const line of out.split('\n')) {
-        const match = line.match(/"language_server_windows_x64\.exe","(\d+)"/i);
-        if (match) pids.push(parseInt(match[1], 10));
+      const out = execSync(`netstat -ano | findstr ":${port} "`, { encoding: 'utf-8', timeout: 5000 });
+      const listeningMatch = out.match(/LISTENING\s+(\d+)/);
+      if (listeningMatch) {
+        const pid = parseInt(listeningMatch[1], 10);
+        log.info(`Killing process on port ${port}: PID ${pid}`);
+        try { execSync(`taskkill /PID ${pid} /F /T`, { timeout: 5000 }); } catch { /* ignore */ }
       }
-      for (const pid of pids) {
-        log.info(`Killing residual LS process: PID ${pid}`);
-        try { execSync(`taskkill /PID ${pid} /F`, { timeout: 5000 }); } catch { /* ignore */ }
-      }
-    } else {
-      try { execSync('pkill -f language_server', { timeout: 5000 }); } catch { /* ignore */ }
     }
-  } catch { /* no residual processes */ }
+  } catch { /* no conflict */ }
 
   // Clean child_lock files in temp
   try {
@@ -143,9 +154,10 @@ async function tryReuseOwnLs(): Promise<{ port: number; csrfToken: string } | nu
   try {
     await new Promise<void>((resolve, reject) => {
       const client = http2.connect(`http://localhost:${state.port}`);
-      const t = setTimeout(() => { client.close(); reject(new Error('timeout')); }, 2000);
-      client.on('connect', () => { clearTimeout(t); client.close(); resolve(); });
-      client.on('error', () => { clearTimeout(t); reject(new Error('connect error')); });
+      const cleanup = () => { try { client.close(); } catch {} try { client.destroy(); } catch {} };
+      const t = setTimeout(() => { cleanup(); reject(new Error('timeout')); }, 2000);
+      client.on('connect', () => { clearTimeout(t); cleanup(); resolve(); });
+      client.on('error', () => { clearTimeout(t); cleanup(); reject(new Error('connect error')); });
     });
     log.info(`Reusing previous LS on port ${state.port} (PID ${state.pid})`);
     return { port: state.port, csrfToken: state.csrf };
@@ -168,7 +180,7 @@ export async function startLanguageServer(opts: {
     _port = reused.port;
     _csrfToken = reused.csrfToken;
     _ready = true;
-    _usingDesktopLs = true;
+    _reusingLs = true;
     return reused;
   }
 
@@ -219,6 +231,7 @@ export async function startLanguageServer(opts: {
     log.warn(`LS exited: code=${code}`);
     _ready = false;
     _process = null;
+    WindsurfClient.resetWarmup(); // Force re-warmup on next LS instance
     // Auto-restart if crashed unexpectedly
     if (code !== 0 && _restartCount < MAX_RESTARTS) {
       _restartCount++;
@@ -234,12 +247,14 @@ export async function startLanguageServer(opts: {
     try {
       await new Promise<void>((resolve, reject) => {
         const client = http2.connect(`http://localhost:${port}`);
-        const t = setTimeout(() => { client.close(); reject(new Error('timeout')); }, 2000);
-        client.on('connect', () => { clearTimeout(t); client.close(); resolve(); });
-        client.on('error', () => { clearTimeout(t); reject(new Error('connect error')); });
+        const cleanup = () => { try { client.close(); } catch {} try { client.destroy(); } catch {} };
+        const t = setTimeout(() => { cleanup(); reject(new Error('timeout')); }, 2000);
+        client.on('connect', () => { clearTimeout(t); cleanup(); resolve(); });
+        client.on('error', () => { clearTimeout(t); cleanup(); reject(new Error('connect error')); });
       });
       _ready = true;
       _csrfToken = DEFAULT_CSRF;
+      _restartCount = 0; // Reset on successful start
       log.info(`LS ready on port ${port}`);
       // Save state for reuse on next startup
       if (proc.pid) saveOwnLsState(port, DEFAULT_CSRF, proc.pid);
@@ -250,10 +265,10 @@ export async function startLanguageServer(opts: {
 }
 
 export function stopLanguageServer(kill = false): void {
-  if (_usingDesktopLs) {
+  if (_reusingLs) {
     log.info('Detaching from reused LS (keeping alive for next start)');
     _ready = false;
-    _usingDesktopLs = false;
+    _reusingLs = false;
     return;
   }
   if (_process) {
@@ -273,4 +288,4 @@ export function stopLanguageServer(kill = false): void {
 export function getLsPort(): number { return _port; }
 export function getCsrfToken(): string { return _csrfToken; }
 export function isLsReady(): boolean { return _ready; }
-export function isUsingDesktopLs(): boolean { return _usingDesktopLs; }
+export function isReusingLs(): boolean { return _reusingLs; }

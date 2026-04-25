@@ -49,12 +49,24 @@ function convertMessages(body: any): any[] {
       if (typeof msg.content === 'string') {
         content = msg.content;
       } else if (Array.isArray(msg.content)) {
-        content = msg.content
-          .filter((b: any) => b.type === 'text')
-          .map((b: any) => b.text)
-          .join('\n');
+        // Extract text from all content block types
+        const parts: string[] = [];
+        for (const block of msg.content) {
+          if (block.type === 'text' && block.text) {
+            parts.push(block.text);
+          } else if (block.type === 'thinking' && block.thinking) {
+            parts.push(`<thinking>\n${block.thinking}\n</thinking>`);
+          } else if (block.type === 'tool_use') {
+            parts.push(`<tool_use id="${block.id}" name="${block.name}">\n${JSON.stringify(block.input)}\n</tool_use>`);
+          } else if (block.type === 'tool_result') {
+            const resultContent = typeof block.content === 'string' ? block.content
+              : Array.isArray(block.content) ? block.content.map((b: any) => b.text || '').join('\n') : '';
+            parts.push(`<tool_result tool_use_id="${block.tool_use_id}">\n${resultContent}\n</tool_result>`);
+          }
+        }
+        content = parts.join('\n');
       }
-      messages.push({ role: msg.role, content });
+      if (content) messages.push({ role: msg.role, content });
     }
   }
   return messages;
@@ -90,13 +102,7 @@ export async function handleAnthropicMessage(
     const thinkingBudget = body.thinking?.budget_tokens || 128000;
 
     if (stream) {
-      res.writeHead(200, {
-        'Content-Type': 'text/event-stream',
-        'Cache-Control': 'no-cache',
-        'Connection': 'keep-alive',
-        'Access-Control-Allow-Origin': '*',
-      });
-
+      let headersSent = false;
       let sentStart = false;
       let fullText = '';
       let fullThinking = '';
@@ -135,6 +141,15 @@ export async function handleAnthropicMessage(
       }
 
       for await (const chunk of streamChatCore(messages, modelKey, authKey, { thinkingBudget })) {
+        if (!headersSent) {
+          res.writeHead(200, {
+            'Content-Type': 'text/event-stream',
+            'Cache-Control': 'no-cache',
+            'Connection': 'keep-alive',
+            'Access-Control-Allow-Origin': '*',
+          });
+          headersSent = true;
+        }
         ctx = chunk.ctx;
 
         if (!sentStart) {
