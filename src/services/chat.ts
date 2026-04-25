@@ -13,6 +13,7 @@ import { validateToken, isModelAllowedForToken, consumeQuota } from './token.js'
 import { recordRequest } from './stats.js';
 import { WindsurfClient } from '../core/client.js';
 import { getLsPort, getCsrfToken } from '../core/langserver.js';
+import { applyMapping, waitForConcurrency, releaseConcurrency } from './routing.js';
 
 export class ChatError extends Error {
   constructor(message: string, public statusCode: number) {
@@ -48,17 +49,27 @@ export async function runChatCore(
     throw new ChatError(tokenCheck.error || 'Unauthorized', 401);
   }
 
-  const modelInfo = getModelInfo(modelKey);
+  // Apply model name mapping
+  const mappedKey = applyMapping(modelKey);
+
+  const modelInfo = getModelInfo(mappedKey);
   if (!modelInfo) {
     throw new ChatError(`Model "${modelKey}" not found`, 404);
   }
 
-  if (tokenCheck.token && !isModelAllowedForToken(tokenCheck.token, modelKey)) {
+  if (tokenCheck.token && !isModelAllowedForToken(tokenCheck.token, mappedKey)) {
     throw new ChatError(`Model "${modelKey}" not allowed for this key`, 403);
+  }
+
+  // Concurrency control — wait for slot
+  const gotSlot = await waitForConcurrency(mappedKey, 30_000);
+  if (!gotSlot) {
+    throw new ChatError(`Model "${modelKey}" concurrency limit reached, try later`, 429);
   }
 
   const ch = pickChannel();
   if (!ch) {
+    releaseConcurrency(mappedKey);
     throw new ChatError('All channels busy or in error state', 429);
   }
 
@@ -76,16 +87,31 @@ export async function runChatCore(
     const { promptTokens, completionTokens, tokensUsed } = computeUsage(messages, fullText);
     markChannelSuccess(ch.apiKey);
     consumeQuota(authKey, tokensUsed);
-    recordRequest({ model: modelKey, channelId: ch.id, tokensUsed });
+    recordRequest({ model: mappedKey, channelId: ch.id, tokensUsed });
 
     return {
       text: fullText, thinking: fullThinking,
-      modelInfo, modelKey, channel: ch, authKey,
+      modelInfo, modelKey: mappedKey, channel: ch, authKey,
       promptTokens, completionTokens,
     };
   } catch (err: any) {
-    markChannelError(ch.apiKey);
+    classifyAndMarkError(ch.apiKey, err);
     throw err;
+  } finally {
+    releaseConcurrency(mappedKey);
+  }
+}
+
+function classifyAndMarkError(apiKey: string, err: any): void {
+  const msg = String(err?.message || '').toLowerCase();
+  if (msg.includes('rate') && msg.includes('limit')) {
+    markChannelError(apiKey, 'rate_limited');
+  } else if (msg.includes('quota') || msg.includes('exhausted') || msg.includes('exceeded')) {
+    markChannelError(apiKey, 'exhausted');
+  } else if (msg.includes('unauthorized') || msg.includes('forbidden') || msg.includes('401') || msg.includes('403')) {
+    markChannelError(apiKey, 'banned');
+  } else {
+    markChannelError(apiKey);
   }
 }
 

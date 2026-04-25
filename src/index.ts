@@ -8,6 +8,7 @@ import { createInterface } from 'readline';
 import { exec } from 'child_process';
 import { config, log } from './config.js';
 import { startLanguageServer, stopLanguageServer, detectLsBinary } from './core/langserver.js';
+import { destroyPool } from './core/grpc.js';
 import { startServer } from './server.js';
 import { initChannels, addChannel, listChannels, removeChannel, clearAllChannels } from './services/channel.js';
 import { initTokens } from './services/token.js';
@@ -129,6 +130,7 @@ async function cmdStart(flags: Record<string, string>) {
     if (shuttingDown) return;
     shuttingDown = true;
     log.info(`${signal} received, shutting down...`);
+    destroyPool();
     server.close(() => {
       stopLanguageServer();
       process.exit(0);

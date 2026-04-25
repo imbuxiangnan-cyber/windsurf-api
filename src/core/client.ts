@@ -105,19 +105,36 @@ export class WindsurfClient {
     let idleCount = 0;
     let sawActive = false;
     let sawText = false;
+    let consecutiveErrors = 0;
+    const MAX_CONSECUTIVE_ERRORS = 3;
 
     while (Date.now() - startTime < maxWait) {
       await new Promise(r => setTimeout(r, pollInterval));
 
-      const statusProto = buildGetTrajectoryRequest(cascadeId);
-      const statusResp = await grpcUnary(this.port, this.csrfToken, `${LS_SERVICE}/GetCascadeTrajectory`, grpcFrame(statusProto));
-      const status = parseTrajectoryStatus(statusResp);
-      const trajectoryId = parseCascadeTrajectoryId(statusResp);
-      if (trajectoryId) this.trajectoryId = trajectoryId;
+      let status: number;
+      let steps: any[];
+      let trajectoryId: string | null;
 
-      const stepsProto = buildGetTrajectoryStepsRequest(cascadeId, stepOffset);
-      const stepsResp = await grpcUnary(this.port, this.csrfToken, `${LS_SERVICE}/GetCascadeTrajectorySteps`, grpcFrame(stepsProto));
-      const steps = parseTrajectorySteps(stepsResp);
+      try {
+        const statusProto = buildGetTrajectoryRequest(cascadeId);
+        const statusResp = await grpcUnary(this.port, this.csrfToken, `${LS_SERVICE}/GetCascadeTrajectory`, grpcFrame(statusProto));
+        status = parseTrajectoryStatus(statusResp);
+        trajectoryId = parseCascadeTrajectoryId(statusResp);
+        if (trajectoryId) this.trajectoryId = trajectoryId;
+
+        const stepsProto = buildGetTrajectoryStepsRequest(cascadeId, stepOffset);
+        const stepsResp = await grpcUnary(this.port, this.csrfToken, `${LS_SERVICE}/GetCascadeTrajectorySteps`, grpcFrame(stepsProto));
+        steps = parseTrajectorySteps(stepsResp);
+        consecutiveErrors = 0;
+      } catch (err: any) {
+        consecutiveErrors++;
+        log.warn(`Stream poll error (${consecutiveErrors}/${MAX_CONSECUTIVE_ERRORS}): ${err.message}`);
+        if (consecutiveErrors >= MAX_CONSECUTIVE_ERRORS) {
+          throw new Error(`Stream interrupted: ${err.message}`);
+        }
+        await new Promise(r => setTimeout(r, 1000));
+        continue;
+      }
 
       for (let i = 0; i < steps.length; i++) {
         const step = steps[i];
