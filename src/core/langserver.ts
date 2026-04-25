@@ -17,6 +17,7 @@ let _port = DEFAULT_PORT;
 let _csrfToken = DEFAULT_CSRF;
 let _ready = false;
 let _usingDesktopLs = false;
+let _restartCount = 0;
 
 function getWinSearchPaths(): string[] {
   const paths: string[] = [];
@@ -199,8 +200,6 @@ export async function startLanguageServer(opts: {
     '--enable_index_service=false',
     '--enable_lsp=false',
     '--detect_proxy=false',
-    '--manager_connect_timeout=5',
-    '--manager_max_connection_failures=3',
   ];
 
   log.info(`Starting LS: ${binaryPath} on port ${port}`);
@@ -215,7 +214,6 @@ export async function startLanguageServer(opts: {
     const line = d.toString().trim();
     if (line) log.warn('[LS:err]', line.slice(0, 200));
   });
-  let _restartCount = 0;
   const MAX_RESTARTS = 3;
   proc.on('exit', (code) => {
     log.warn(`LS exited: code=${code}`);
