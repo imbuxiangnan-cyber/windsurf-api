@@ -75,15 +75,11 @@
     <div id="panel-channels" class="panel active">
       <div class="section">
         <h2>Add Account</h2>
+        <p style="color:#94a3b8;font-size:0.85rem;margin-bottom:12px">Token: Windsurf DevTools → Application → Cookies → devin_session_token</p>
         <div class="form-row">
-          <input id="ch-email" placeholder="Email">
-          <input id="ch-password" type="password" placeholder="Password">
-          <button class="btn btn-primary" onclick="addChannelByLogin()">Login & Add</button>
-        </div>
-        <div class="form-row">
-          <input id="ch-email2" placeholder="Email">
-          <input id="ch-apikey" placeholder="Session Token (apiKey)">
-          <button class="btn btn-primary" onclick="addChannelByKey()">Direct Add</button>
+          <input id="ch-label" placeholder="Label (optional, e.g. my-pro)">
+          <input id="ch-token" placeholder="Session Token (devin_session_token)">
+          <button class="btn btn-primary" onclick="addChannelByToken()">Add Account</button>
         </div>
       </div>
       <div class="section">
@@ -177,25 +173,14 @@ function renderChannels(channels) {
   </tr>`).join('');
 }
 
-async function addChannelByLogin() {
-  const email = document.getElementById('ch-email').value;
-  const pw = document.getElementById('ch-password').value;
-  if (!email || !pw) return alert('Enter email and password');
-  const res = await api('/dashboard/api/channels', { method: 'POST', body: JSON.stringify({ email, password: pw }) });
+async function addChannelByToken() {
+  const label = document.getElementById('ch-label').value || 'account-' + Date.now().toString(36);
+  const token = document.getElementById('ch-token').value;
+  if (!token) return alert('Enter session token (devin_session_token)');
+  const res = await api('/dashboard/api/channels', { method: 'POST', body: JSON.stringify({ email: label, apiKey: token }) });
   if (res.error) return alert(res.error);
-  document.getElementById('ch-email').value = '';
-  document.getElementById('ch-password').value = '';
-  load();
-}
-
-async function addChannelByKey() {
-  const email = document.getElementById('ch-email2').value;
-  const apiKey = document.getElementById('ch-apikey').value;
-  if (!email || !apiKey) return alert('Enter email and session token');
-  const res = await api('/dashboard/api/channels', { method: 'POST', body: JSON.stringify({ email, apiKey }) });
-  if (res.error) return alert(res.error);
-  document.getElementById('ch-email2').value = '';
-  document.getElementById('ch-apikey').value = '';
+  document.getElementById('ch-label').value = '';
+  document.getElementById('ch-token').value = '';
   load();
 }
 

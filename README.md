@@ -33,14 +33,14 @@ npm run build
 ### 基本用法
 
 ```bash
-# 1. 添加账号
-node dist/index.js add-account --email your@email.com --password yourpassword
+# 1. 添加账号（token 从 Windsurf DevTools → Cookies → devin_session_token 获取）
+npx windsurf-api add-account --token <your_devin_session_token>
 
 # 2. 启动服务
-node dist/index.js start
+npx windsurf-api start
 
 # 或指定 Language Server 路径
-node dist/index.js start --ls-path /path/to/language_server_linux_x64
+npx windsurf-api start --ls-path /path/to/language_server_linux_x64
 ```
 
 服务器默认监听 `http://localhost:4000`。
@@ -59,11 +59,9 @@ node dist/index.js start --ls-path /path/to/language_server_linux_x64
 # 启动服务
 windsurf-api start [--port 4000] [--ls-path /path/to/ls]
 
-# 添加账号（邮箱+密码自动登录）
-windsurf-api add-account --email user@example.com --password mypassword
-
-# 添加账号（直接使用 session token）
-windsurf-api add-account --email user@example.com --api-key <session_token>
+# 添加账号
+windsurf-api add-account --token <devin_session_token>
+windsurf-api add-account --token <token> --label my-pro-account
 
 # 查看账号列表
 windsurf-api list-accounts
@@ -155,9 +153,9 @@ cp /path/to/language_server_linux_x64 ls-binary/
 docker compose up -d --build
 
 # 3. 添加账号
-curl -X POST http://localhost:4000/dashboard/api/channels \
+curl -X POST http://localhost:4000/api/accounts \
   -H "Content-Type: application/json" \
-  -d '{"email": "your@email.com", "password": "yourpassword"}'
+  -d '{"email": "my-account", "apiKey": "<devin_session_token>"}'
 ```
 
 ## 🏗 架构

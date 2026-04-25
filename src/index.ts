@@ -10,7 +10,6 @@ import { startServer } from './server.js';
 import { initChannels, addChannel, listChannels, removeChannel } from './services/channel.js';
 import { initTokens } from './services/token.js';
 import { initStats, getStats } from './services/stats.js';
-import { windsurfLogin } from './core/login.js';
 
 const BANNER = `
 ╦ ╦┬┌┐┌┌┬┐┌─┐┬ ┬┬─┐┌─┐  ╔═╗╔═╗╦
@@ -129,35 +128,23 @@ async function cmdStart(flags: Record<string, string>) {
 // ─── add-account ────────────────────────────────────────
 
 async function cmdAddAccount(flags: Record<string, string>) {
-  const email = flags['email'] || flags['e'];
-  if (!email) {
-    console.error('Usage: windsurf-api add-account --email <email> --password <password>');
-    console.error('   or: windsurf-api add-account --email <email> --api-key <token>');
+  const token = flags['token'] || flags['t'];
+  if (!token) {
+    console.error('Usage: windsurf-api add-account --token <session_token> [--label <name>]');
+    console.error('');
+    console.error('How to get your token:');
+    console.error('  1. Open Windsurf desktop app');
+    console.error('  2. Open DevTools (F12)');
+    console.error('  3. Application → Cookies → find "devin_session_token"');
+    console.error('  4. Copy the token value');
     process.exit(1);
   }
 
   initChannels();
 
-  const apiKey = flags['api-key'] || flags['k'];
-  const password = flags['password'] || flags['p'];
-  const label = flags['label'] || flags['l'] || '';
-
-  if (apiKey) {
-    const ch = addChannel(label || email, apiKey, flags['tier'] || 'pro');
-    console.log(`\n  ✓ Account added: ${ch.email} (${ch.id})\n`);
-  } else if (password) {
-    try {
-      const result = await windsurfLogin(email, password);
-      const ch = addChannel(label || email, result.sessionToken, flags['tier'] || 'pro');
-      console.log(`\n  ✓ Account added: ${ch.email} (${ch.id})\n`);
-    } catch (err: any) {
-      console.error(`\n  ✗ Login failed: ${err.message}\n`);
-      process.exit(1);
-    }
-  } else {
-    console.error('Provide --password or --api-key');
-    process.exit(1);
-  }
+  const label = flags['label'] || flags['l'] || `account-${Date.now().toString(36)}`;
+  const ch = addChannel(label, token, flags['tier'] || 'pro');
+  console.log(`\n  ✓ Account added: ${ch.email} (${ch.id})\n`);
 }
 
 // ─── list-accounts ──────────────────────────────────────
@@ -289,9 +276,7 @@ function showHelp() {
   console.log('    --verbose, -v             Enable debug logging');
   console.log('');
   console.log('  add-account                 Add a Windsurf account');
-  console.log('    --email, -e <email>       Account email');
-  console.log('    --password, -p <pw>       Account password (auto login)');
-  console.log('    --api-key, -k <key>       Session token (direct add)');
+  console.log('    --token, -t <token>       Session token (devin_session_token)');
   console.log('    --label, -l <label>       Account label');
   console.log('    --tier <tier>             Account tier (default: pro)');
   console.log('');
@@ -311,7 +296,8 @@ function showHelp() {
   console.log('  windsurf-api start');
   console.log('  windsurf-api start --claude-code');
   console.log('  windsurf-api start --port 8080 --ls-path /opt/windsurf/language_server_linux_x64');
-  console.log('  windsurf-api add-account --email user@example.com --password mypassword');
+  console.log('  windsurf-api add-account --token <your_devin_session_token>');
+  console.log('  windsurf-api add-account --token <token> --label my-pro-account');
   console.log('  windsurf-api list-accounts');
   console.log('  windsurf-api check-usage');
   console.log('');
