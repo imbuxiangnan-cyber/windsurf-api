@@ -14,10 +14,31 @@ let _process: ReturnType<typeof spawn> | null = null;
 let _port = DEFAULT_PORT;
 let _ready = false;
 
-const LS_SEARCH_PATHS_WIN = [
-  process.env.APPDATA ? `${process.env.APPDATA}\\Windsurf\\bin\\language_server_windows_x64.exe` : '',
-  'C:\\Program Files\\Windsurf\\resources\\app\\extensions\\windsurf\\bin\\language_server_windows_x64.exe',
-].filter(Boolean);
+function getWinSearchPaths(): string[] {
+  const paths: string[] = [];
+  const lsBin = 'resources\\app\\extensions\\windsurf\\bin\\language_server_windows_x64.exe';
+  // Try to find Windsurf.exe via PATH and derive LS path
+  const envPath = process.env.PATH || '';
+  for (const dir of envPath.split(';')) {
+    if (dir.toLowerCase().includes('windsurf') && existsSync(`${dir}\\Windsurf.exe`)) {
+      paths.push(`${dir}\\${lsBin}`);
+    }
+  }
+  if (process.env.APPDATA) {
+    paths.push(`${process.env.APPDATA}\\Windsurf\\bin\\language_server_windows_x64.exe`);
+  }
+  // Common install locations on all drives
+  for (const drive of ['C', 'D', 'E', 'F']) {
+    paths.push(`${drive}:\\Windsurf\\${lsBin}`);
+    paths.push(`${drive}:\\Program Files\\Windsurf\\${lsBin}`);
+  }
+  if (process.env.LOCALAPPDATA) {
+    paths.push(`${process.env.LOCALAPPDATA}\\Programs\\Windsurf\\${lsBin}`);
+  }
+  return paths;
+}
+
+const LS_SEARCH_PATHS_WIN = getWinSearchPaths();
 
 const LS_SEARCH_PATHS_LINUX = [
   `${process.env.HOME}/.windsurf/bin/language_server_linux_x64`,
