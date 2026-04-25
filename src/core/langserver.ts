@@ -2,9 +2,10 @@
  * Language server process manager.
  */
 
-import { spawn } from 'child_process';
-import { existsSync, mkdirSync } from 'fs';
+import { spawn, execSync } from 'child_process';
+import { existsSync, mkdirSync, readdirSync, unlinkSync } from 'fs';
 import { join } from 'path';
+import { tmpdir } from 'os';
 import http2 from 'http2';
 import { config, log } from '../config.js';
 
@@ -68,6 +69,36 @@ export function detectLsBinary(): string | null {
   return null;
 }
 
+function cleanupPreviousLs(port: number): void {
+  // Kill residual language_server processes
+  try {
+    if (process.platform === 'win32') {
+      const out = execSync('tasklist /FI "IMAGENAME eq language_server_windows_x64.exe" /FO CSV /NH', { encoding: 'utf-8', timeout: 5000 });
+      const pids: number[] = [];
+      for (const line of out.split('\n')) {
+        const match = line.match(/"language_server_windows_x64\.exe","(\d+)"/i);
+        if (match) pids.push(parseInt(match[1], 10));
+      }
+      for (const pid of pids) {
+        log.info(`Killing residual LS process: PID ${pid}`);
+        try { execSync(`taskkill /PID ${pid} /F`, { timeout: 5000 }); } catch { /* ignore */ }
+      }
+    } else {
+      try { execSync('pkill -f language_server', { timeout: 5000 }); } catch { /* ignore */ }
+    }
+  } catch { /* no residual processes */ }
+
+  // Clean child_lock files in temp
+  try {
+    const tmp = tmpdir();
+    const files = readdirSync(tmp).filter(f => f.startsWith('child_lock_'));
+    for (const f of files) {
+      try { unlinkSync(join(tmp, f)); } catch { /* locked by other process */ }
+    }
+    if (files.length > 0) log.info(`Cleaned ${files.length} LS lock file(s)`);
+  } catch { /* ignore */ }
+}
+
 export async function startLanguageServer(opts: {
   binaryPath: string;
   port?: number;
@@ -82,6 +113,9 @@ export async function startLanguageServer(opts: {
   if (!existsSync(binaryPath)) {
     throw new Error(`Language Server binary not found: ${binaryPath}`);
   }
+
+  // Kill any residual LS processes and clean lock files
+  cleanupPreviousLs(port);
 
   // Use platform-specific data dirs
   const lsDataDir = join(config.dataDir, 'ls');
