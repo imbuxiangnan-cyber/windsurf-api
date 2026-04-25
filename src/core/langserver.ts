@@ -3,9 +3,10 @@
  */
 
 import { spawn } from 'child_process';
-import { existsSync } from 'fs';
+import { existsSync, mkdirSync } from 'fs';
+import { join } from 'path';
 import http2 from 'http2';
-import { log } from '../config.js';
+import { config, log } from '../config.js';
 
 const DEFAULT_PORT = 42100;
 const DEFAULT_CSRF = 'windsurf-api-csrf-token';
@@ -82,13 +83,19 @@ export async function startLanguageServer(opts: {
     throw new Error(`Language Server binary not found: ${binaryPath}`);
   }
 
+  // Use platform-specific data dirs
+  const lsDataDir = join(config.dataDir, 'ls');
+  const lsDbDir = join(lsDataDir, 'db');
+  if (!existsSync(lsDataDir)) mkdirSync(lsDataDir, { recursive: true });
+  if (!existsSync(lsDbDir)) mkdirSync(lsDbDir, { recursive: true });
+
   const args = [
     `--api_server_url=${opts.apiServerUrl || 'https://server.self-serve.windsurf.com'}`,
     `--server_port=${port}`,
     `--csrf_token=${DEFAULT_CSRF}`,
     '--register_user_url=https://api.codeium.com/register_user/',
-    '--codeium_dir=/opt/windsurf/data/default',
-    '--database_dir=/opt/windsurf/data/default/db',
+    `--codeium_dir=${lsDataDir}`,
+    `--database_dir=${lsDbDir}`,
     '--enable_local_search=false',
     '--enable_index_service=false',
     '--enable_lsp=false',
@@ -105,7 +112,7 @@ export async function startLanguageServer(opts: {
   });
   proc.stderr?.on('data', (d: Buffer) => {
     const line = d.toString().trim();
-    if (line) log.debug('[LS:err]', line.slice(0, 200));
+    if (line) log.warn('[LS:err]', line.slice(0, 200));
   });
   proc.on('exit', (code) => {
     log.warn(`LS exited: code=${code}`);
