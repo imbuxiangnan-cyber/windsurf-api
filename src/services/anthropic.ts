@@ -86,6 +86,9 @@ export async function handleAnthropicMessage(
     const stream = !!body.stream;
     const msgId = 'msg_' + randomUUID().replace(/-/g, '').slice(0, 20);
 
+    // Extract thinking budget from Anthropic API format
+    const thinkingBudget = body.thinking?.budget_tokens || 128000;
+
     if (stream) {
       res.writeHead(200, {
         'Content-Type': 'text/event-stream',
@@ -131,7 +134,7 @@ export async function handleAnthropicMessage(
         blockIndex++;
       }
 
-      for await (const chunk of streamChatCore(messages, modelKey, authKey)) {
+      for await (const chunk of streamChatCore(messages, modelKey, authKey, { thinkingBudget })) {
         ctx = chunk.ctx;
 
         if (!sentStart) {

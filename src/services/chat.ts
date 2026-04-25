@@ -64,6 +64,7 @@ export async function* streamChatCore(
   messages: any[],
   modelKey: string,
   authKey: string,
+  opts: { thinkingBudget?: number } = {},
 ): AsyncGenerator<StreamChunk> {
   const tokenCheck = validateToken(authKey);
   if (!tokenCheck.valid) {
@@ -97,7 +98,9 @@ export async function* streamChatCore(
 
   try {
     const client = new WindsurfClient(ch.apiKey, getLsPort(), getCsrfToken());
-    const gen = client.streamChat(messages, modelInfo.enumValue, modelInfo.modelUid!);
+    const gen = client.streamChat(messages, modelInfo.enumValue, modelInfo.modelUid!, {
+      thinkingBudget: opts.thinkingBudget,
+    });
 
     for await (const chunk of gen) {
       yield {
@@ -205,7 +208,9 @@ export async function handleChatCompletion(
       let fullText = '';
       let ctx!: StreamContext;
 
-      for await (const chunk of streamChatCore(body.messages, modelKey, authKey)) {
+      // Extract thinking budget: OpenAI uses reasoning_effort or custom header
+      const thinkingBudget = (body as any).thinking_budget || 128000;
+      for await (const chunk of streamChatCore(body.messages, modelKey, authKey, { thinkingBudget })) {
         ctx = chunk.ctx;
         if (!sentRole) {
           sse(res, {

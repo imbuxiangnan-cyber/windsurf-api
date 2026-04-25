@@ -37,6 +37,7 @@ export interface CascadeConfigOptions {
   plannerMode?: PlannerMode;
   communicationText?: string;
   includeCommunicationOverride?: boolean;
+  thinkingBudget?: number;
 }
 
 export interface ChatToolCallInfo {
@@ -194,9 +195,16 @@ export function buildCascadeConfig(
   }
 
   const plannerConfig = Buffer.concat(plannerParts);
+
+  // Brain config — field 7
+  // field 1 = 1 (enabled), field 6.6 = thinking config
+  const thinkingBudget = options.thinkingBudget ?? 128000;
+  const thinkingInner = Buffer.concat([
+    writeVarintField(1, thinkingBudget),  // budget_tokens
+  ]);
   const brainConfig = Buffer.concat([
     writeVarintField(1, 1),
-    writeMessageField(6, writeMessageField(6, Buffer.alloc(0))),
+    writeMessageField(6, writeMessageField(6, thinkingInner)),
   ]);
 
   return Buffer.concat([
