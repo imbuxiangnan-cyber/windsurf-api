@@ -142,8 +142,8 @@ export async function startLanguageServer(opts: {
     '--enable_index_service=false',
     '--enable_lsp=false',
     '--detect_proxy=false',
-    '--manager_connect_timeout=15',
-    '--manager_max_connection_failures=5',
+    '--manager_connect_timeout=5',
+    '--manager_max_connection_failures=3',
   ];
 
   log.info(`Starting LS: ${binaryPath} on port ${port}`);
