@@ -16,7 +16,7 @@ import { initChannels, addChannel, listChannels, removeChannel, clearAllChannels
 import { initTokens } from './services/token.js';
 import { initStats, getStats } from './services/stats.js';
 import { loadProxyConfig, setProxy, enableProxy, disableProxy, clearProxy, applyProxy } from './services/proxy.js';
-import { windsurfLogin } from './core/login.js';
+import { windsurfLogin, windsurfOttLogin } from './core/login.js';
 
 const BANNER = `
 ╦ ╦┬┌┐┌┌┬┐┌─┐┬ ┬┬─┐┌─┐  ╔═╗╔═╗╦
@@ -256,8 +256,9 @@ async function cmdAuth(flags: Record<string, string>) {
   if (desktopToken) {
     console.log('  [1] Auto — from Windsurf desktop app (detected!)');
   }
-  console.log('  [2] Email + Password — login via Windsurf API');
-  console.log('  [3] Token — paste session token manually\n');
+  console.log('  [2] OTT — paste one-time token from windsurf.com');
+  console.log('  [3] Email + Password — login via Windsurf API');
+  console.log('  [4] Token — paste session token manually\n');
 
   const defaultChoice = desktopToken ? '1' : '2';
   const choice = await prompt(`  Select (${defaultChoice}): `) || defaultChoice;
@@ -269,10 +270,28 @@ async function cmdAuth(flags: Record<string, string>) {
 
   } else if (choice === '2') {
     console.log('');
+    console.log('  Get your OTT from: https://windsurf.com/account/tokens');
+    console.log('  (Format: ott$...)\n');
+    const ott = await prompt('  Paste OTT here: ');
+    if (!ott) { console.error('\n  ✗ No token provided. Aborted.\n'); process.exit(1); }
+
+    const cleanOtt = ott.replace(/^['"]|['"]$/g, '').trim();
+    console.log('\n  Exchanging OTT for session token...');
+    try {
+      const result = await windsurfOttLogin(cleanOtt);
+      cleanToken = result.sessionToken;
+      finalLabel = `ott-${Date.now().toString(36)}`;
+      console.log(`  ✓ OTT login successful!\n`);
+    } catch (err: any) {
+      console.error(`\n  ✗ OTT exchange failed: ${err.message}\n`);
+      process.exit(1);
+    }
+
+  } else if (choice === '3') {
+    console.log('');
     const email = await prompt('  Email: ');
     if (!email) { console.error('\n  ✗ No email provided. Aborted.\n'); process.exit(1); }
 
-    // Hide password input
     const password = await prompt('  Password: ');
     if (!password) { console.error('\n  ✗ No password provided. Aborted.\n'); process.exit(1); }
 

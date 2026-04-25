@@ -60,12 +60,58 @@ export async function windsurfLogin(email: string, password: string): Promise<Lo
   }
   const auth1Token: string = loginRes.data.token;
 
+  return exchangeForSession(auth1Token);
+}
+
+/**
+ * Login with OTT (one-time token from windsurf.com).
+ */
+export async function windsurfOttLogin(ott: string): Promise<LoginResult> {
+  log.info('Exchanging OTT for session token...');
+
+  // Try as auth1_token first
+  const res1 = await postJson(WINDSURF_POSTAUTH_URL, { auth1_token: ott });
+  if (res1.status === 200 && res1.data?.sessionToken) {
+    log.info('OTT login successful (via auth1_token)');
+    return {
+      sessionToken: res1.data.sessionToken,
+      auth1Token: res1.data.auth1Token || ott,
+      accountId: res1.data.accountId || '',
+    };
+  }
+
+  // Try as ott_token
+  const res2 = await postJson(WINDSURF_POSTAUTH_URL, { ott_token: ott });
+  if (res2.status === 200 && res2.data?.sessionToken) {
+    log.info('OTT login successful (via ott_token)');
+    return {
+      sessionToken: res2.data.sessionToken,
+      auth1Token: res2.data.auth1Token || ott,
+      accountId: res2.data.accountId || '',
+    };
+  }
+
+  // Try as token
+  const res3 = await postJson(WINDSURF_POSTAUTH_URL, { token: ott });
+  if (res3.status === 200 && res3.data?.sessionToken) {
+    log.info('OTT login successful (via token)');
+    return {
+      sessionToken: res3.data.sessionToken,
+      auth1Token: res3.data.auth1Token || ott,
+      accountId: res3.data.accountId || '',
+    };
+  }
+
+  throw new Error(`OTT exchange failed. Responses: ${res1.status}, ${res2.status}, ${res3.status}`);
+}
+
+async function exchangeForSession(auth1Token: string): Promise<LoginResult> {
   const postAuthRes = await postJson(WINDSURF_POSTAUTH_URL, { auth1_token: auth1Token });
   if (postAuthRes.status !== 200 || !postAuthRes.data?.sessionToken) {
     throw new Error(`PostAuth failed: ${postAuthRes.status} ${JSON.stringify(postAuthRes.data)}`);
   }
 
-  log.info(`Login successful: ${email}`);
+  log.info('Login successful');
   return {
     sessionToken: postAuthRes.data.sessionToken,
     auth1Token: postAuthRes.data.auth1Token,
