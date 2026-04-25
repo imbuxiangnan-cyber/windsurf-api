@@ -216,42 +216,48 @@ export class WindsurfClient {
   }
 
   /**
-   * Format full conversation history into a single prompt for Cascade.
-   * Cascade only accepts one text input per message, so we embed conversation
-   * context when there are multiple turns.
+   * Format conversation messages (excluding system) into prompt text.
+   * System prompt is handled separately via communicationText.
    */
   private formatConversation(messages: any[]): string {
-    // Single user message — send as-is (most common case, no overhead)
-    const nonSystem = messages.filter((m: any) => m.role !== 'system');
-    if (nonSystem.length === 1 && nonSystem[0].role === 'user') {
-      const system = messages.filter((m: any) => m.role === 'system');
-      const systemText = system.map((m: any) => String(m.content)).join('\n');
-      const userText = String(nonSystem[0].content);
-      return systemText ? `${systemText}\n\n${userText}` : userText;
+    // Single user message — send as-is (most common, zero overhead)
+    if (messages.length === 1 && messages[0].role === 'user') {
+      return String(messages[0].content);
     }
 
-    // Multi-turn: format as conversation context
+    // Multi-turn: include conversation history so the model has context
+    // Use XML-style tags that LLMs understand well
     const parts: string[] = [];
-    for (const msg of messages) {
+    parts.push('<conversation_history>');
+    for (let i = 0; i < messages.length; i++) {
+      const msg = messages[i];
       const content = String(msg.content);
+      const isLast = i === messages.length - 1;
+
+      if (isLast && msg.role === 'user') {
+        // Last user message goes outside history tags as the actual query
+        parts.push('</conversation_history>');
+        parts.push('');
+        parts.push(content);
+        return parts.join('\n');
+      }
+
       switch (msg.role) {
-        case 'system':
-          parts.push(`[System]\n${content}`);
-          break;
         case 'user':
-          parts.push(`[User]\n${content}`);
+          parts.push(`<user_message>${content}</user_message>`);
           break;
         case 'assistant':
-          parts.push(`[Assistant]\n${content}`);
+          parts.push(`<assistant_message>${content}</assistant_message>`);
           break;
         case 'tool':
-          parts.push(`[Tool Result]\n${content}`);
+          parts.push(`<tool_result>${content}</tool_result>`);
           break;
         default:
-          parts.push(`[${msg.role}]\n${content}`);
+          parts.push(`<${msg.role}>${content}</${msg.role}>`);
       }
     }
-    return parts.join('\n\n');
+    parts.push('</conversation_history>');
+    return parts.join('\n');
   }
 
   async *streamChat(
@@ -260,8 +266,20 @@ export class WindsurfClient {
   ): AsyncGenerator<ChatChunk> {
     await this.warmup();
     const cascadeId = await this.startCascade();
-    const text = this.formatConversation(messages);
-    await this.sendMessage(cascadeId, text, modelEnum, modelUid, options);
+
+    // Extract system prompt → pass as communicationText for proper handling
+    const systemMsgs = messages.filter((m: any) => m.role === 'system');
+    const nonSystemMsgs = messages.filter((m: any) => m.role !== 'system');
+    const systemPrompt = systemMsgs.map((m: any) => String(m.content)).join('\n');
+
+    const mergedOpts = { ...options };
+    if (systemPrompt) {
+      mergedOpts.communicationText = systemPrompt;
+    }
+
+    const text = this.formatConversation(nonSystemMsgs);
+    log.debug(`streamChat: ${messages.length} msgs (${systemMsgs.length} system, ${nonSystemMsgs.length} chat), prompt len=${text.length}`);
+    await this.sendMessage(cascadeId, text, modelEnum, modelUid, mergedOpts);
     yield* this.streamCascade(cascadeId, 0);
   }
 }
