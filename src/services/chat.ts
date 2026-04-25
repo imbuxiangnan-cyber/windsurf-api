@@ -11,7 +11,7 @@ import { pickChannel, markChannelError, markChannelSuccess } from './channel.js'
 import { Channel } from '../types.js';
 import { validateToken, isModelAllowedForToken, consumeQuota } from './token.js';
 import { recordRequest } from './stats.js';
-import { WindsurfClient } from '../core/client.js';
+import { WindsurfClient, ChatChunk } from '../core/client.js';
 import { getLsPort, getCsrfToken } from '../core/langserver.js';
 import { applyMapping, waitForConcurrency, releaseConcurrency } from './routing.js';
 
@@ -51,11 +51,20 @@ export interface StreamContext {
  * Validate, pick channel, return an async generator that yields chunks in real-time.
  * Caller MUST consume the generator fully (or catch errors) to ensure cleanup.
  */
+export interface StreamChunk {
+  text: string;
+  thinking: string;
+  stepKind?: string | null;
+  toolCalls?: any[];
+  runCommand?: any;
+  ctx: StreamContext;
+}
+
 export async function* streamChatCore(
   messages: any[],
   modelKey: string,
   authKey: string,
-): AsyncGenerator<{ text: string; thinking: string; ctx: StreamContext }> {
+): AsyncGenerator<StreamChunk> {
   const tokenCheck = validateToken(authKey);
   if (!tokenCheck.valid) {
     throw new ChatError(tokenCheck.error || 'Unauthorized', 401);
@@ -91,7 +100,14 @@ export async function* streamChatCore(
     const gen = client.streamChat(messages, modelInfo.enumValue, modelInfo.modelUid!);
 
     for await (const chunk of gen) {
-      yield { text: chunk.text || '', thinking: chunk.thinking || '', ctx };
+      yield {
+        text: chunk.text || '',
+        thinking: chunk.thinking || '',
+        stepKind: chunk.stepKind,
+        toolCalls: chunk.toolCalls,
+        runCommand: chunk.runCommand,
+        ctx,
+      };
     }
 
     markChannelSuccess(ch.apiKey);
@@ -198,6 +214,14 @@ export async function handleChatCompletion(
           });
           sentRole = true;
         }
+        // Thinking → reasoning_content (o1/extended thinking style)
+        if (chunk.thinking) {
+          sse(res, {
+            id: chatId, object: 'chat.completion.chunk', created, model: ctx.modelInfo.name,
+            choices: [{ index: 0, delta: { reasoning_content: chunk.thinking }, finish_reason: null }],
+          });
+        }
+        // Text → content
         if (chunk.text) {
           fullText += chunk.text;
           sse(res, {

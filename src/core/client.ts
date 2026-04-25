@@ -47,7 +47,7 @@ export class WindsurfClient {
   private sessionId: string;
   private cascadeId: string | null = null;
   private trajectoryId: string | null = null;
-  private workspaceInit = false;
+  private static _globalWarmupDone = false;
 
   constructor(apiKey: string, port: number, csrfToken: string, sessionId?: string) {
     this.apiKey = apiKey;
@@ -57,7 +57,7 @@ export class WindsurfClient {
   }
 
   async warmup(): Promise<void> {
-    if (this.workspaceInit) return;
+    if (WindsurfClient._globalWarmupDone) return;
     try {
       const initProto = buildInitializePanelStateRequest(this.apiKey, this.sessionId);
       await grpcUnary(this.port, this.csrfToken, `${LS_SERVICE}/InitializeCascadePanelState`, grpcFrame(initProto), 5000);
@@ -72,7 +72,7 @@ export class WindsurfClient {
       const trustProto = buildUpdateWorkspaceTrustRequest(this.apiKey, true, this.sessionId);
       await grpcUnary(this.port, this.csrfToken, `${LS_SERVICE}/UpdateWorkspaceTrust`, grpcFrame(trustProto), 5000);
     } catch (e: any) { log.warn('UpdateWorkspaceTrust:', e.message); }
-    this.workspaceInit = true;
+    WindsurfClient._globalWarmupDone = true;
     log.debug('Cascade workspace init complete');
   }
 

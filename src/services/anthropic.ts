@@ -6,7 +6,7 @@ import http from 'http';
 import { randomUUID } from 'crypto';
 import { log } from '../config.js';
 import { resolveModel } from '../models.js';
-import { runChatCore, streamChatCore, StreamContext, ChatError } from './chat.js';
+import { runChatCore, streamChatCore, StreamContext, StreamChunk, ChatError } from './chat.js';
 import { consumeQuota } from './token.js';
 import { recordRequest } from './stats.js';
 
@@ -95,12 +95,41 @@ export async function handleAnthropicMessage(
       });
 
       let sentStart = false;
-      let blockStarted = false;
-      let thinkingBlockStarted = false;
-      let textBlockIndex = 0;
       let fullText = '';
       let fullThinking = '';
       let ctx!: StreamContext;
+
+      // Block state tracking
+      let blockIndex = 0;
+      let thinkingBlockOpen = false;
+      let textBlockOpen = false;
+
+      function openThinkingBlock() {
+        if (thinkingBlockOpen) return;
+        sse(res, { type: 'content_block_start', index: blockIndex, content_block: { type: 'thinking', thinking: '' } });
+        thinkingBlockOpen = true;
+      }
+
+      function closeThinkingBlock() {
+        if (!thinkingBlockOpen) return;
+        sse(res, { type: 'content_block_stop', index: blockIndex });
+        thinkingBlockOpen = false;
+        blockIndex++;
+      }
+
+      function openTextBlock() {
+        if (textBlockOpen) return;
+        closeThinkingBlock(); // close thinking first if open
+        sse(res, { type: 'content_block_start', index: blockIndex, content_block: { type: 'text', text: '' } });
+        textBlockOpen = true;
+      }
+
+      function closeTextBlock() {
+        if (!textBlockOpen) return;
+        sse(res, { type: 'content_block_stop', index: blockIndex });
+        textBlockOpen = false;
+        blockIndex++;
+      }
 
       for await (const chunk of streamChatCore(messages, modelKey, authKey)) {
         ctx = chunk.ctx;
@@ -117,48 +146,34 @@ export async function handleAnthropicMessage(
           sentStart = true;
         }
 
+        // Thinking deltas → thinking block
         if (chunk.thinking) {
           fullThinking += chunk.thinking;
-          if (!thinkingBlockStarted) {
-            sse(res, {
-              type: 'content_block_start',
-              index: 0,
-              content_block: { type: 'thinking', thinking: '' },
-            });
-            thinkingBlockStarted = true;
-            textBlockIndex = 1;
-          }
+          openThinkingBlock();
           sse(res, {
-            type: 'content_block_delta',
-            index: 0,
+            type: 'content_block_delta', index: blockIndex,
             delta: { type: 'thinking_delta', thinking: chunk.thinking },
           });
         }
 
+        // Text deltas → text block (auto-closes thinking block first)
         if (chunk.text) {
           fullText += chunk.text;
-          if (!blockStarted) {
-            if (thinkingBlockStarted) {
-              sse(res, { type: 'content_block_stop', index: 0 });
-            }
-            sse(res, {
-              type: 'content_block_start',
-              index: textBlockIndex,
-              content_block: { type: 'text', text: '' },
-            });
-            blockStarted = true;
-          }
+          openTextBlock();
           sse(res, {
-            type: 'content_block_delta',
-            index: textBlockIndex,
+            type: 'content_block_delta', index: blockIndex,
             delta: { type: 'text_delta', text: chunk.text },
           });
         }
       }
 
-      if (blockStarted) {
-        sse(res, { type: 'content_block_stop', index: textBlockIndex });
-      } else if (thinkingBlockStarted) {
+      // Close any open blocks
+      closeThinkingBlock();
+      closeTextBlock();
+
+      // If nothing was output, emit an empty text block
+      if (blockIndex === 0) {
+        sse(res, { type: 'content_block_start', index: 0, content_block: { type: 'text', text: '' } });
         sse(res, { type: 'content_block_stop', index: 0 });
       }
 
