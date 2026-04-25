@@ -158,7 +158,7 @@ export async function handleSystemRoutes(
     return true;
   }
 
-  // ─── copilot-api-plus style management endpoints ───
+  // ─── management API endpoints ───
 
   // GET /api/accounts — same as /dashboard/api/channels
   if (path === '/api/accounts' && method === 'GET') {
@@ -215,6 +215,48 @@ export async function handleSystemRoutes(
   if (path === '/api/models' && method === 'GET') {
     const { listModels } = await import('../models.js');
     json(res, 200, { models: listModels() });
+    return true;
+  }
+
+  // GET/PUT /api/models/mapping
+  if (path === '/api/models/mapping' && method === 'GET') {
+    const { getMapping } = await import('../services/routing.js');
+    json(res, 200, { mapping: getMapping() });
+    return true;
+  }
+
+  if (path === '/api/models/mapping' && method === 'PUT') {
+    if (!checkDashboardAuth(req)) { json(res, 401, { error: 'Unauthorized' }); return true; }
+    const body = (req as any).parsedBody;
+    if (!body?.mapping) { json(res, 400, { error: 'Provide mapping object' }); return true; }
+    const { setMapping, getMapping } = await import('../services/routing.js');
+    setMapping(body.mapping);
+    json(res, 200, { mapping: getMapping() });
+    return true;
+  }
+
+  // GET/PUT /api/models/concurrency
+  if (path === '/api/models/concurrency' && method === 'GET') {
+    const { getConcurrencyConfig } = await import('../services/routing.js');
+    json(res, 200, { concurrency: getConcurrencyConfig() });
+    return true;
+  }
+
+  if (path === '/api/models/concurrency' && method === 'PUT') {
+    if (!checkDashboardAuth(req)) { json(res, 401, { error: 'Unauthorized' }); return true; }
+    const body = (req as any).parsedBody;
+    if (!body?.concurrency) { json(res, 400, { error: 'Provide concurrency object' }); return true; }
+    const { setConcurrencyConfig, getConcurrencyConfig } = await import('../services/routing.js');
+    setConcurrencyConfig(body.concurrency);
+    json(res, 200, { concurrency: getConcurrencyConfig() });
+    return true;
+  }
+
+  // GET /api/models/available
+  if (path === '/api/models/available' && method === 'GET') {
+    const { listModels } = await import('../models.js');
+    const { getMapping } = await import('../services/routing.js');
+    json(res, 200, { models: listModels(), mapping: getMapping() });
     return true;
   }
 

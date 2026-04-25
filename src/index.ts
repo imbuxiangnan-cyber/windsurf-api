@@ -1,7 +1,7 @@
 #!/usr/bin/env node
 /**
  * Windsurf API — CLI entrypoint.
- * Modeled after copilot-api-plus CLI style.
+ * CLI entrypoint with interactive auth and account management.
  */
 
 import { createInterface } from 'readline';
@@ -9,9 +9,10 @@ import { exec } from 'child_process';
 import { config, log } from './config.js';
 import { startLanguageServer, stopLanguageServer, detectLsBinary } from './core/langserver.js';
 import { startServer } from './server.js';
-import { initChannels, addChannel, listChannels, removeChannel } from './services/channel.js';
+import { initChannels, addChannel, listChannels, removeChannel, clearAllChannels } from './services/channel.js';
 import { initTokens } from './services/token.js';
 import { initStats, getStats } from './services/stats.js';
+import { loadProxyConfig, setProxy, enableProxy, disableProxy, clearProxy, applyProxy } from './services/proxy.js';
 
 const BANNER = `
 ╦ ╦┬┌┐┌┌┬┐┌─┐┬ ┬┬─┐┌─┐  ╔═╗╔═╗╦
@@ -62,9 +63,24 @@ async function cmdStart(flags: Record<string, string>) {
   const port = parseInt(flags['port'] || flags['p'] || String(config.port), 10);
   const verbose = flags['verbose'] === 'true' || flags['v'] === 'true';
   const claudeCode = flags['claude-code'] === 'true' || flags['c'] === 'true';
+  const proxyEnv = flags['proxy-env'] === 'true';
   let lsPath = flags['ls-path'] || flags['l'] || config.lsBinaryPath;
 
   if (verbose) config.logLevel = 'debug';
+  if (flags['api-key']) config.apiKey = flags['api-key'];
+  if (flags['rate-limit']) (config as any).rateLimit = parseFloat(flags['rate-limit']);
+  if (flags['wait'] === 'true' || flags['w'] === 'true') (config as any).waitOnLimit = true;
+
+  // Apply proxy
+  if (proxyEnv) {
+    log.info('Using proxy from environment variables');
+  } else {
+    applyProxy();
+    const pcfg = loadProxyConfig();
+    if (pcfg.enabled && pcfg.httpProxy) {
+      log.info(`Proxy: ${pcfg.httpProxy}`);
+    }
+  }
 
   initChannels();
   initTokens();
@@ -341,9 +357,97 @@ function cmdDebug() {
   console.log(`  Accounts:        ${channels.length}`);
   console.log(`  Total requests:  ${stats.totalRequests}`);
 
+  const pcfg = loadProxyConfig();
+  console.log(`  Proxy enabled:   ${pcfg.enabled ? 'yes' : 'no'}`);
+  if (pcfg.enabled) {
+    console.log(`  HTTP proxy:      ${pcfg.httpProxy || '(not set)'}`);
+    console.log(`  HTTPS proxy:     ${pcfg.httpsProxy || '(not set)'}`);
+  }
+
   const detected = detectLsBinary();
   console.log(`  LS auto-detect:  ${detected || 'not found'}`);
   console.log('');
+}
+
+// ─── proxy ──────────────────────────────────────────────
+
+async function cmdProxy(flags: Record<string, string>) {
+  if (flags['set'] === 'true') {
+    const httpProxy = await prompt('  HTTP proxy URL (e.g. http://127.0.0.1:7890): ');
+    if (!httpProxy) { console.log('  Cancelled.'); return; }
+    const httpsProxy = await prompt('  HTTPS proxy URL (press Enter to use same): ');
+    const noProxy = await prompt('  No proxy hosts (press Enter to skip): ');
+    const cfg = setProxy(httpProxy, httpsProxy || undefined, noProxy || undefined);
+    console.log(`\n  ✓ Proxy configured and enabled`);
+    console.log(`    HTTP:  ${cfg.httpProxy}`);
+    console.log(`    HTTPS: ${cfg.httpsProxy}\n`);
+    return;
+  }
+
+  if (flags['http-proxy']) {
+    const cfg = setProxy(flags['http-proxy'], flags['https-proxy'] || undefined, flags['no-proxy'] || undefined);
+    console.log(`\n  ✓ Proxy configured: ${cfg.httpProxy}\n`);
+    return;
+  }
+
+  if (flags['enable'] === 'true') {
+    enableProxy();
+    console.log('\n  ✓ Proxy enabled\n');
+    return;
+  }
+
+  if (flags['disable'] === 'true') {
+    disableProxy();
+    console.log('\n  ✓ Proxy disabled (settings preserved)\n');
+    return;
+  }
+
+  if (flags['clear'] === 'true') {
+    clearProxy();
+    console.log('\n  ✓ Proxy configuration cleared\n');
+    return;
+  }
+
+  // Default: show current config
+  const cfg = loadProxyConfig();
+  console.log('');
+  console.log('  Proxy Configuration');
+  console.log('  ─────────────────────────────────');
+  console.log(`  Status:      ${cfg.enabled ? '✓ Enabled' : '✗ Disabled'}`);
+  console.log(`  HTTP proxy:  ${cfg.httpProxy || '(not set)'}`);
+  console.log(`  HTTPS proxy: ${cfg.httpsProxy || '(not set)'}`);
+  console.log(`  No proxy:    ${cfg.noProxy || '(not set)'}`);
+  console.log('');
+}
+
+// ─── logout ─────────────────────────────────────────────
+
+async function cmdLogout(flags: Record<string, string>) {
+  const all = flags['all'] === 'true' || flags['a'] === 'true';
+
+  if (all) {
+    initChannels();
+    clearAllChannels();
+    clearProxy();
+    console.log('\n  ✓ All credentials and proxy settings cleared.\n');
+    return;
+  }
+
+  initChannels();
+  const channels = listChannels();
+  if (channels.length === 0) {
+    console.log('\n  No accounts to clear.\n');
+    return;
+  }
+
+  const confirm = await prompt(`  Remove all ${channels.length} account(s)? (y/N): `);
+  if (confirm.toLowerCase() !== 'y') {
+    console.log('  Cancelled.');
+    return;
+  }
+
+  clearAllChannels();
+  console.log(`\n  ✓ ${channels.length} account(s) removed.\n`);
 }
 
 // ─── help ───────────────────────────────────────────────
@@ -356,6 +460,10 @@ function showHelp() {
   console.log('    --ls-path, -l <path>      Language Server binary path');
   console.log('    --claude-code, -c         Show Claude Code integration hints');
   console.log('    --verbose, -v             Enable debug logging');
+  console.log('    --api-key <key>           API key for authentication');
+  console.log('    --rate-limit <sec>        Request interval in seconds');
+  console.log('    --wait, -w               Wait on rate limit instead of error');
+  console.log('    --proxy-env              Use proxy from env vars');
   console.log('');
   console.log('  auth                        Interactive login (recommended)');
   console.log('    --no-browser              Don\'t auto-open browser');
@@ -366,8 +474,19 @@ function showHelp() {
   console.log('    --tier <tier>             Account tier (default: pro)');
   console.log('');
   console.log('  list-accounts               List all accounts');
-  console.log('  remove-account <id>         Remove an account');
+  console.log('  remove-account <id>         Remove an account (by id/label/number)');
   console.log('    --force, -f               Skip confirmation');
+  console.log('');
+  console.log('  proxy                       Show proxy configuration');
+  console.log('    --set                     Interactive proxy setup');
+  console.log('    --http-proxy <url>        Set HTTP proxy');
+  console.log('    --https-proxy <url>       Set HTTPS proxy');
+  console.log('    --enable                  Enable saved proxy');
+  console.log('    --disable                 Disable proxy (keep settings)');
+  console.log('    --clear                   Clear proxy configuration');
+  console.log('');
+  console.log('  logout                      Clear saved credentials');
+  console.log('    --all, -a                 Clear all data including proxy');
   console.log('');
   console.log('  check-usage                 Show usage statistics');
   console.log('  debug                       Show debug info');
@@ -381,6 +500,8 @@ function showHelp() {
   console.log('  windsurf-api auth');
   console.log('  windsurf-api start');
   console.log('  windsurf-api start --claude-code');
+  console.log('  windsurf-api start --api-key my-secret-key');
+  console.log('  windsurf-api proxy --http-proxy http://127.0.0.1:7890');
   console.log('  windsurf-api add-account --token <token> --label my-pro-account');
   console.log('  windsurf-api list-accounts');
   console.log('  windsurf-api check-usage');
@@ -409,6 +530,12 @@ async function main() {
       break;
     case 'remove-account':
       cmdRemoveAccount(positional, flags);
+      break;
+    case 'proxy':
+      await cmdProxy(flags);
+      break;
+    case 'logout':
+      await cmdLogout(flags);
       break;
     case 'check-usage':
       cmdCheckUsage();

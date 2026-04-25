@@ -6,7 +6,7 @@ import { existsSync, readFileSync, mkdirSync } from 'fs';
 import { resolve, join } from 'path';
 import { homedir } from 'os';
 
-// Data directory: ~/.windsurf-api/ (like copilot-api-plus uses ~/.local/share/)
+// Data directory: ~/.windsurf-api/ (platform-specific)
 function getDefaultDataDir(): string {
   const platform = process.platform;
   if (platform === 'win32') {

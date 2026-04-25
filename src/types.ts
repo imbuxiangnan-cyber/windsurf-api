@@ -6,7 +6,7 @@ export interface Channel {
   id: string;
   email: string;
   apiKey: string;
-  status: 'active' | 'error' | 'disabled';
+  status: 'active' | 'rate_limited' | 'exhausted' | 'error' | 'banned' | 'disabled';
   tier: string;
   errorCount: number;
   lastUsed: number;
@@ -17,7 +17,7 @@ export interface Channel {
 export interface ChannelPublic {
   id: string;
   email: string;
-  status: 'active' | 'error' | 'disabled';
+  status: 'active' | 'rate_limited' | 'exhausted' | 'error' | 'banned' | 'disabled';
   tier: string;
   errorCount: number;
   lastUsed: number;

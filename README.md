@@ -7,7 +7,7 @@
 - **双协议兼容** — OpenAI (`/v1/chat/completions`) + Anthropic (`/v1/messages`) 原生端点
 - **100+ 模型** — Claude / GPT / Gemini / DeepSeek / Grok / Qwen / Kimi 等
 - **多账号池** — 按剩余容量均衡分配，自动故障转移
-- **CLI 管理** — 简单命令行管理账号，类似 copilot-api-plus
+- **CLI 管理** — 简单命令行管理账号，交互式登录
 - **Dashboard** — Web 管理面板，账号/密钥/统计一目了然
 - **API Key 管理** — 下游消费者密钥管理
 - **Docker 支持** — 一键部署
