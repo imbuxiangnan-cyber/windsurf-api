@@ -7,6 +7,7 @@ import {
   writeVarintField, writeStringField, writeMessageField,
   writeBoolField, parseFields, getField, getAllFields,
 } from './proto.js';
+import { log } from '../config.js';
 
 const SOURCE = { USER: 1, SYSTEM: 2, ASSISTANT: 3, TOOL: 4 };
 
@@ -294,6 +295,16 @@ export function parseTrajectorySteps(buf: Buffer): TrajectoryStep[] {
     const plannerField = getField(sf, 20, 2);
     const stepKind = detectStepKind(sf);
 
+    // Debug: scan top-level step fields to find brain/thinking data
+    const stepDebug: string[] = [];
+    for (const candidate of [7, 8, 9, 10, 11, 12, 13, 14, 15, 16, 21, 22, 25, 26, 27, 29, 30, 32, 33, 34, 35]) {
+      const f = getField(sf, candidate, 2);
+      if (f) stepDebug.push(`sf${candidate}:${((f.value as Buffer).length)}b`);
+    }
+    if (stepDebug.length > 0 && stepKind === 'planner_response') {
+      log.debug(`Step top-level fields (kind=${stepKind}): ${stepDebug.join(', ')}`);
+    }
+
     const entry: TrajectoryStep = {
       type: typeField ? (typeField.value as number) : 0,
       status: statusField ? (statusField.value as number) : 0,
@@ -322,10 +333,45 @@ export function parseTrajectorySteps(buf: Buffer): TrajectoryStep[] {
       const textField = getField(pf, 1, 2);
       const modifiedField = getField(pf, 8, 2);
       const thinkField = getField(pf, 3, 2);
+
+      // Scan all planner string fields for debugging
+      const debugFields: string[] = [];
+      for (let fnum = 1; fnum <= 12; fnum++) {
+        const f = getField(pf, fnum, 2);
+        if (f) debugFields.push(`f${fnum}:${((f.value as Buffer).length)}b`);
+      }
+      if (debugFields.length > 0) {
+        log.debug(`Planner fields: ${debugFields.join(', ')}`);
+      }
+
       const responseText = textField ? (textField.value as Buffer).toString('utf8') : '';
       const modifiedText = modifiedField ? (modifiedField.value as Buffer).toString('utf8') : '';
-      entry.text = modifiedText || responseText;
-      if (thinkField) entry.thinking = (thinkField.value as Buffer).toString('utf8');
+      let rawText = modifiedText || responseText;
+
+      // Primary: thinking from protobuf field 3
+      let thinking = '';
+      if (thinkField) {
+        thinking = (thinkField.value as Buffer).toString('utf8');
+      }
+
+      // Fallback: extract <thinking> or <Thought> tags embedded in text
+      if (!thinking && rawText) {
+        const thinkingMatch = rawText.match(/<thinking>([\s\S]*?)<\/thinking>/);
+        const thoughtMatch = rawText.match(/<Thought>([\s\S]*?)<\/Thought>/);
+        const reasonMatch = rawText.match(/<reasoning>([\s\S]*?)<\/reasoning>/);
+        const match = thinkingMatch || thoughtMatch || reasonMatch;
+        if (match) {
+          thinking = match[1].trim();
+          rawText = rawText.replace(match[0], '').trim();
+          log.debug(`Extracted thinking from text tags (${thinking.length}b)`);
+        }
+      }
+
+      entry.text = rawText;
+      entry.thinking = thinking;
+
+      if (thinking) log.debug(`Step thinking: ${thinking.slice(0, 80)}...`);
+      if (rawText) log.debug(`Step text: ${rawText.slice(0, 80)}...`);
     }
 
     const proposalField = getField(sf, 49, 2);

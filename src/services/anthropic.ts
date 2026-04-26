@@ -125,33 +125,32 @@ export async function handleAnthropicMessage(
 
       // Block state tracking
       let blockIndex = 0;
-      let thinkingBlockOpen = false;
-      let textBlockOpen = false;
+      let currentBlockType: 'thinking' | 'text' | null = null;
 
-      function openThinkingBlock() {
-        if (thinkingBlockOpen) return;
-        sse(res, { type: 'content_block_start', index: blockIndex, content_block: { type: 'thinking', thinking: '' } });
-        thinkingBlockOpen = true;
-      }
-
-      function closeThinkingBlock() {
-        if (!thinkingBlockOpen) return;
+      function closeCurrentBlock() {
+        if (currentBlockType === null) return;
         sse(res, { type: 'content_block_stop', index: blockIndex });
-        thinkingBlockOpen = false;
+        currentBlockType = null;
         blockIndex++;
       }
 
-      function openTextBlock() {
-        if (textBlockOpen) return;
-        closeThinkingBlock(); // close thinking first if open
-        sse(res, { type: 'content_block_start', index: blockIndex, content_block: { type: 'text', text: '' } });
-        textBlockOpen = true;
+      function ensureBlock(type: 'thinking' | 'text') {
+        if (currentBlockType === type) return;
+        closeCurrentBlock();
+        if (type === 'thinking') {
+          sse(res, { type: 'content_block_start', index: blockIndex, content_block: { type: 'thinking', thinking: '' } });
+        } else {
+          sse(res, { type: 'content_block_start', index: blockIndex, content_block: { type: 'text', text: '' } });
+        }
+        currentBlockType = type;
       }
 
-      function closeTextBlock() {
-        if (!textBlockOpen) return;
+      function emitToolUseBlock(id: string, name: string, input: any) {
+        closeCurrentBlock();
+        sse(res, { type: 'content_block_start', index: blockIndex, content_block: { type: 'tool_use', id, name, input: {} } });
+        const inputJson = typeof input === 'string' ? input : JSON.stringify(input);
+        sse(res, { type: 'content_block_delta', index: blockIndex, delta: { type: 'input_json_delta', partial_json: inputJson } });
         sse(res, { type: 'content_block_stop', index: blockIndex });
-        textBlockOpen = false;
         blockIndex++;
       }
 
@@ -204,17 +203,52 @@ export async function handleAnthropicMessage(
           // Thinking deltas → thinking block
           if (chunk.thinking) {
             fullThinking += chunk.thinking;
-            openThinkingBlock();
+            ensureBlock('thinking');
             sse(res, {
               type: 'content_block_delta', index: blockIndex,
               delta: { type: 'thinking_delta', thinking: chunk.thinking },
             });
           }
 
+          // Tool calls → tool_use content blocks
+          if (chunk.toolCalls && chunk.toolCalls.length > 0) {
+            for (const tc of chunk.toolCalls) {
+              let input: any;
+              try { input = JSON.parse(tc.argumentsJson || '{}'); } catch { input = { raw: tc.argumentsJson }; }
+              const toolId = tc.id || ('toolu_' + randomUUID().replace(/-/g, '').slice(0, 16));
+              emitToolUseBlock(toolId, tc.name, input);
+              log.debug(`Emitted tool_use: ${tc.name} (${toolId})`);
+            }
+          }
+
+          // Run commands → tool_use block (command execution)
+          if (chunk.runCommand) {
+            const cmd = chunk.runCommand;
+            const cmdLine = cmd.proposedCommandLine || cmd.commandLine || '';
+            if (cmdLine) {
+              const toolId = 'toolu_' + randomUUID().replace(/-/g, '').slice(0, 16);
+              emitToolUseBlock(toolId, 'bash', { command: cmdLine, cwd: cmd.cwd || undefined });
+              log.debug(`Emitted bash tool_use: ${cmdLine.slice(0, 60)}`);
+
+              // If command has output, emit as text
+              const output = cmd.combinedOutput || cmd.stdout || cmd.stderr || '';
+              if (output) {
+                const exitInfo = cmd.exitCode !== null ? ` (exit ${cmd.exitCode})` : '';
+                const outputText = `\n\`\`\`\n${output.trim()}\n\`\`\`${exitInfo}\n`;
+                fullText += outputText;
+                ensureBlock('text');
+                sse(res, {
+                  type: 'content_block_delta', index: blockIndex,
+                  delta: { type: 'text_delta', text: outputText },
+                });
+              }
+            }
+          }
+
           // Text deltas → text block (auto-closes thinking block first)
           if (chunk.text) {
             fullText += chunk.text;
-            openTextBlock();
+            ensureBlock('text');
             sse(res, {
               type: 'content_block_delta', index: blockIndex,
               delta: { type: 'text_delta', text: chunk.text },
@@ -225,9 +259,8 @@ export async function handleAnthropicMessage(
         clearInterval(heartbeatTimer);
       }
 
-      // Close any open blocks
-      closeThinkingBlock();
-      closeTextBlock();
+      // Close any open block
+      closeCurrentBlock();
 
       // If nothing was output, emit an empty text block
       if (blockIndex === 0) {
