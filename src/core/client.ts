@@ -519,7 +519,12 @@ export class WindsurfClient {
     const text = this.formatConversation(nonSystemMsgs);
     const inputChars = text.length + (mergedOpts.communicationText?.length || 0);
     const hasTools = /Available (?:tools|functions)|<tool_call>/i.test(mergedOpts.communicationText || '');
-    log.debug(`streamChat: ${messages.length} msgs (${systemMsgs.length} system, ${nonSystemMsgs.length} chat), prompt len=${text.length}, tools=${hasTools}`);
+    // Detailed input breakdown for debugging
+    const roleCounts = nonSystemMsgs.reduce((acc: Record<string, number>, m: any) => {
+      acc[m.role] = (acc[m.role] || 0) + 1;
+      return acc;
+    }, {});
+    log.info(`streamChat: ${messages.length} msgs [${Object.entries(roleCounts).map(([r, c]) => `${r}=${c}`).join(', ')}], conversation=${text.length} chars, system=${mergedOpts.communicationText?.length || 0} chars, total=${inputChars} chars`);
     await this.sendMessage(cascadeId, text, modelEnum, modelUid, mergedOpts);
     yield* this.streamCascade(cascadeId, 0, 180_000, inputChars, !!images.length || hasTools);
   }

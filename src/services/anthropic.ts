@@ -63,15 +63,38 @@ function buildAnthropicToolPreamble(tools: any[]): string {
     'Available functions:',
   ];
 
-  // For Claude Code with 30+ tools, use compact format (names + descriptions only)
-  // to avoid blowing past upstream payload limits
+  // For Claude Code with 30+ tools, use ultra-compact format to save context space.
+  // Well-known tools: just name. Custom/unusual tools: name + short description.
+  const WELL_KNOWN = new Set([
+    'Read', 'Edit', 'MultiEdit', 'Write', 'Bash', 'Grep', 'Glob', 'Search',
+    'ListDir', 'Agent', 'TodoRead', 'TodoWrite', 'WebSearch', 'WebFetch',
+    'NotebookRead', 'NotebookEdit',
+  ]);
   const useCompact = tools.length > 15;
 
-  for (const tool of tools) {
-    if (!tool.name) continue;
-    if (useCompact) {
-      lines.push(`- ${tool.name}: ${tool.description || '(no description)'}`);
-    } else {
+  if (useCompact) {
+    const known: string[] = [];
+    const custom: string[] = [];
+    for (const tool of tools) {
+      if (!tool.name) continue;
+      if (WELL_KNOWN.has(tool.name)) {
+        known.push(tool.name);
+      } else {
+        // Short description: truncate to 80 chars
+        const desc = tool.description ? `: ${tool.description.slice(0, 80)}` : '';
+        custom.push(`- ${tool.name}${desc}`);
+      }
+    }
+    if (known.length > 0) {
+      lines.push(`Standard tools: ${known.join(', ')}`);
+    }
+    if (custom.length > 0) {
+      lines.push('Additional tools:');
+      lines.push(...custom);
+    }
+  } else {
+    for (const tool of tools) {
+      if (!tool.name) continue;
       lines.push('');
       lines.push(`### ${tool.name}`);
       if (tool.description) lines.push(tool.description);
@@ -85,6 +108,36 @@ function buildAnthropicToolPreamble(tools: any[]): string {
   }
   lines.push('');
   return lines.join('\n');
+}
+
+/** Max conversation chars to keep (excluding system). Cascade can't handle 100K+ */
+const MAX_CONVERSATION_CHARS = 80_000;
+
+/**
+ * Truncate conversation to fit within Cascade's context budget.
+ * Keeps system messages + the most recent non-system messages that fit.
+ */
+function truncateConversation(messages: any[]): any[] {
+  const system = messages.filter(m => m.role === 'system');
+  const nonSystem = messages.filter(m => m.role !== 'system');
+
+  // Measure total non-system chars
+  let totalChars = 0;
+  for (const m of nonSystem) totalChars += String(m.content).length;
+
+  if (totalChars <= MAX_CONVERSATION_CHARS) return messages;
+
+  // Keep from the end, staying within budget
+  const kept: any[] = [];
+  let budget = MAX_CONVERSATION_CHARS;
+  for (let i = nonSystem.length - 1; i >= 0; i--) {
+    const len = String(nonSystem[i].content).length;
+    if (budget - len < 0 && kept.length > 0) break;
+    kept.unshift(nonSystem[i]);
+    budget -= len;
+  }
+  log.warn(`Truncated conversation: ${nonSystem.length} → ${kept.length} msgs, ${totalChars} → ${totalChars - budget} chars`);
+  return [...system, ...kept];
 }
 
 function convertMessages(body: any): any[] {
@@ -201,7 +254,7 @@ export async function handleAnthropicMessage(
       });
     }
 
-    const messages = convertMessages(strippedBody);
+    const messages = truncateConversation(convertMessages(strippedBody));
     const stream = !!body.stream;
     const msgId = 'msg_' + randomUUID().replace(/-/g, '').slice(0, 20);
 
