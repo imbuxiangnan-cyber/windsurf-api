@@ -235,8 +235,10 @@ export class WindsurfClient {
       }
 
       // Cold stall: input-length-aware timeout
+      // Tool-heavy payloads (hasDefaultMode) get 60s base instead of 30s
       const elapsed = Date.now() - startTime;
-      const coldStallMs = Math.min(maxWait, 30_000 + Math.floor(inputChars / 1500) * 5_000);
+      const coldBase = hasDefaultMode ? 60_000 : 30_000;
+      const coldStallMs = Math.min(maxWait, coldBase + Math.floor(inputChars / 1500) * 5_000);
       if (elapsed > coldStallMs && sawActive && !sawText && seenToolCallIds.size === 0) {
         log.warn(`Cascade cold stall: ${elapsed}ms active, no output (threshold=${coldStallMs}ms, inputChars=${inputChars})`);
         endReason = 'stall_cold';
@@ -516,8 +518,9 @@ export class WindsurfClient {
 
     const text = this.formatConversation(nonSystemMsgs);
     const inputChars = text.length + (mergedOpts.communicationText?.length || 0);
-    log.debug(`streamChat: ${messages.length} msgs (${systemMsgs.length} system, ${nonSystemMsgs.length} chat), prompt len=${text.length}`);
+    const hasTools = /Available (?:tools|functions)|<tool_call>/i.test(mergedOpts.communicationText || '');
+    log.debug(`streamChat: ${messages.length} msgs (${systemMsgs.length} system, ${nonSystemMsgs.length} chat), prompt len=${text.length}, tools=${hasTools}`);
     await this.sendMessage(cascadeId, text, modelEnum, modelUid, mergedOpts);
-    yield* this.streamCascade(cascadeId, 0, 180_000, inputChars, !!images.length);
+    yield* this.streamCascade(cascadeId, 0, 180_000, inputChars, !!images.length || hasTools);
   }
 }

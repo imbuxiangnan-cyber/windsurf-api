@@ -428,6 +428,13 @@ export async function handleAnthropicMessage(
       // Close any open block
       closeCurrentBlock();
 
+      // Diagnostic: log output summary for debugging tool call issues
+      const stopReason = emittedToolUse ? 'tool_use' : 'end_turn';
+      log.info(`Anthropic response: stop=${stopReason}, textLen=${fullText.length}, thinkingLen=${fullThinking.length}, toolUse=${emittedToolUse}`);
+      if (fullText.length > 0 && fullText.length < 500) {
+        log.debug(`Response text: ${fullText.replace(/\n/g, '\\n').slice(0, 300)}`);
+      }
+
       // If nothing was output, emit an empty text block
       if (blockIndex === 0) {
         sse(res, { type: 'content_block_start', index: 0, content_block: { type: 'text', text: '' } });
