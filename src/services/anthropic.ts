@@ -59,6 +59,19 @@ function buildAnthropicToolPreamble(tools: any[]): string {
   return lines.join('\n');
 }
 
+/** Strip echoed tool XML from text output (model sometimes echoes history) */
+const ECHOED_TOOL_XML = /<\/?(?:tool_result|tool_use|tool_call)[^>]*>[\s\S]*?(?:<\/(?:tool_result|tool_use|tool_call)>|$)/g;
+const ECHOED_TOOL_TAGS = /<\/?(?:tool_result|tool_use)[^>]*>/g;
+
+function stripEchoedToolXml(text: string): string {
+  // First try to strip complete blocks
+  let cleaned = text.replace(ECHOED_TOOL_XML, '');
+  // Then strip any remaining orphan tags
+  cleaned = cleaned.replace(ECHOED_TOOL_TAGS, '');
+  // Clean up excess whitespace from removal
+  return cleaned.replace(/\n{3,}/g, '\n\n').trim();
+}
+
 function convertMessages(body: any): any[] {
   const messages: any[] = [];
   if (body.system) {
@@ -307,7 +320,12 @@ export async function handleAnthropicMessage(
           // Text deltas → text block (sanitized, auto-closes thinking block first)
           // When tools are present, parse <tool_call> blocks from text
           if (chunk.text) {
-            const safeText = textSanitizer.feed(chunk.text);
+            let safeText = textSanitizer.feed(chunk.text);
+            // Strip echoed tool XML from text (model sometimes echoes history)
+            if (safeText && ECHOED_TOOL_TAGS.test(safeText)) {
+              ECHOED_TOOL_TAGS.lastIndex = 0;
+              safeText = safeText.replace(ECHOED_TOOL_TAGS, '').replace(/\n{3,}/g, '\n\n');
+            }
             if (safeText && toolParser) {
               const parsed = toolParser.feed(safeText);
               if (parsed.text) {
