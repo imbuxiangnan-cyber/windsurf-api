@@ -7,6 +7,7 @@ import { randomUUID } from 'crypto';
 import { log } from '../config.js';
 import { resolveModel, isThinkingModel } from '../models.js';
 import { runChatCore, streamChatCore, StreamContext, StreamChunk, ChatError } from './chat.js';
+import { ToolCallStreamParser } from './tool-emulation.js';
 import { consumeQuota } from './token.js';
 import { recordRequest } from './stats.js';
 import { stripMessagesPayload } from './strip-reminders.js';
@@ -40,7 +41,10 @@ function getApiKey(req: http.IncomingMessage): string | null {
 function buildAnthropicToolPreamble(tools: any[]): string {
   if (!tools || tools.length === 0) return '';
   const lines: string[] = [
-    'You have access to the following tools. To use a tool, respond with a tool_use content block.',
+    'You have access to the following tools. To call a tool, output a JSON block wrapped in <tool_call> tags.',
+    'Format: <tool_call>{"name": "tool_name", "arguments": {...}}</tool_call>',
+    'You may call multiple tools by outputting multiple <tool_call> blocks.',
+    'After the tool results are provided, continue your response.',
     '',
     'Available tools:',
   ];
@@ -51,6 +55,7 @@ function buildAnthropicToolPreamble(tools: any[]): string {
       lines.push(`  Input schema: ${JSON.stringify(tool.input_schema)}`);
     }
   }
+  lines.push('');
   return lines.join('\n');
 }
 
@@ -169,6 +174,9 @@ export async function handleAnthropicMessage(
       let ctx!: StreamContext;
       const textSanitizer = new PathSanitizeStream();
       const thinkingSanitizer = new PathSanitizeStream();
+      const hasTools = Array.isArray(body.tools) && body.tools.length > 0;
+      const toolParser = hasTools ? new ToolCallStreamParser() : null;
+      let emittedToolUse = false;
 
       // Block state tracking
       let blockIndex = 0;
@@ -296,9 +304,28 @@ export async function handleAnthropicMessage(
           }
 
           // Text deltas → text block (sanitized, auto-closes thinking block first)
+          // When tools are present, parse <tool_call> blocks from text
           if (chunk.text) {
             const safeText = textSanitizer.feed(chunk.text);
-            if (safeText) {
+            if (safeText && toolParser) {
+              const parsed = toolParser.feed(safeText);
+              if (parsed.text) {
+                fullText += parsed.text;
+                ensureBlock('text');
+                sse(res, {
+                  type: 'content_block_delta', index: blockIndex,
+                  delta: { type: 'text_delta', text: parsed.text },
+                });
+              }
+              for (const tc of parsed.toolCalls) {
+                const toolId = 'toolu_' + randomUUID().replace(/-/g, '').slice(0, 16);
+                let input: any;
+                try { input = JSON.parse(tc.function.arguments || '{}'); } catch { input = { raw: tc.function.arguments }; }
+                emitToolUseBlock(toolId, tc.function.name, input);
+                emittedToolUse = true;
+                log.debug(`Parsed tool_call → tool_use: ${tc.function.name} (${toolId})`);
+              }
+            } else if (safeText) {
               fullText += safeText;
               ensureBlock('text');
               sse(res, {
@@ -322,7 +349,29 @@ export async function handleAnthropicMessage(
           delta: { type: 'thinking_delta', thinking: flushThinking },
         });
       }
-      const flushText = textSanitizer.flush();
+      let flushText = textSanitizer.flush();
+      if (flushText && toolParser) {
+        const parsed = toolParser.flush();
+        flushText = parsed.text;
+        for (const tc of parsed.toolCalls) {
+          const toolId = 'toolu_' + randomUUID().replace(/-/g, '').slice(0, 16);
+          let input: any;
+          try { input = JSON.parse(tc.function.arguments || '{}'); } catch { input = { raw: tc.function.arguments }; }
+          emitToolUseBlock(toolId, tc.function.name, input);
+          emittedToolUse = true;
+          log.debug(`Parsed tool_call → tool_use (flush): ${tc.function.name}`);
+        }
+      } else if (toolParser) {
+        const finalParsed = toolParser.flush();
+        if (finalParsed.text) flushText = finalParsed.text;
+        for (const tc of finalParsed.toolCalls) {
+          const toolId = 'toolu_' + randomUUID().replace(/-/g, '').slice(0, 16);
+          let input: any;
+          try { input = JSON.parse(tc.function.arguments || '{}'); } catch { input = { raw: tc.function.arguments }; }
+          emitToolUseBlock(toolId, tc.function.name, input);
+          emittedToolUse = true;
+        }
+      }
       if (flushText) {
         fullText += flushText;
         ensureBlock('text');
@@ -348,7 +397,7 @@ export async function handleAnthropicMessage(
       const cacheWrite = ctx?.cacheWriteTokens || 0;
       sse(res, {
         type: 'message_delta',
-        delta: { stop_reason: 'end_turn', stop_sequence: null },
+        delta: { stop_reason: emittedToolUse ? 'tool_use' : 'end_turn', stop_sequence: null },
         usage: {
           input_tokens: inputTokens,
           output_tokens: outputTokens,
