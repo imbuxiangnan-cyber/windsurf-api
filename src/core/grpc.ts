@@ -180,7 +180,12 @@ function grpcUnaryOnce(
     req.on('end', () => {
       settle(() => {
         if (grpcStatus !== '0') {
-          reject(new Error(grpcMessage ? decodeURIComponent(grpcMessage) : `gRPC status ${grpcStatus}`));
+          const decoded = grpcMessage ? decodeURIComponent(grpcMessage) : '';
+          const isCsrf = grpcStatus === '16' || /csrf|unauthenticated/i.test(decoded);
+          const errMsg = isCsrf
+            ? `invalid CSRF token (gRPC UNAUTHENTICATED) on ${path}`
+            : (decoded || `gRPC status ${grpcStatus}`);
+          reject(new Error(errMsg));
           return;
         }
         resolve(stripGrpcFrame(Buffer.concat(chunks)));

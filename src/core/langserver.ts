@@ -152,6 +152,7 @@ async function tryReuseOwnLs(): Promise<{ port: number; csrfToken: string } | nu
   if (!state) return null;
 
   try {
+    // Step 1: TCP connectivity check
     await new Promise<void>((resolve, reject) => {
       const client = http2.connect(`http://localhost:${state.port}`);
       const cleanup = () => { try { client.close(); } catch {} try { client.destroy(); } catch {} };
@@ -159,6 +160,24 @@ async function tryReuseOwnLs(): Promise<{ port: number; csrfToken: string } | nu
       client.on('connect', () => { clearTimeout(t); cleanup(); resolve(); });
       client.on('error', () => { clearTimeout(t); cleanup(); reject(new Error('connect error')); });
     });
+
+    // Step 2: CSRF validation — make a lightweight gRPC call to verify the token
+    try {
+      const { grpcUnary, grpcFrame } = await import('./grpc.js');
+      const { buildInitializePanelStateRequest } = await import('./windsurf.js');
+      const testProto = buildInitializePanelStateRequest(state.csrf, 'csrf-test');
+      await grpcUnary(state.port, state.csrf, '/exa.language_server_pb.LanguageServerService/InitializeCascadePanelState', grpcFrame(testProto), 3000);
+    } catch (e: any) {
+      const msg = e?.message || '';
+      if (/csrf|unauthenticated|permission/i.test(msg)) {
+        log.warn(`Previous LS on port ${state.port} has mismatched CSRF token — starting fresh`);
+        clearOwnLsState();
+        return null;
+      }
+      // Other errors (e.g. invalid proto) are OK — LS is alive and accepted our CSRF
+      log.debug(`LS reuse CSRF check non-fatal error: ${msg}`);
+    }
+
     log.info(`Reusing previous LS on port ${state.port} (PID ${state.pid})`);
     return { port: state.port, csrfToken: state.csrf };
   } catch {
