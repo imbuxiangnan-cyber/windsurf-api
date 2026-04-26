@@ -35,6 +35,29 @@ const IDENTITY_PATTERNS: [RegExp, string][] = [
   [/\bCascade\s+(here|can|will|would|could|shall|cannot|can't|doesn't|is\s+able)/gi, 'Claude $1'],
   // Generic "Windsurf" → "Claude" (last, catches remaining)
   [/\bWindsurf\b/g, 'Claude'],
+
+  // ── Windsurf IDE mode/concept scrubbing ──
+  // English: "Write mode" / "Chat mode" / "Agent mode" (Windsurf-specific)
+  [/\bWrite\s+mode\b/gi, 'normal mode'],
+  [/\bChat\s+mode\b/gi, 'normal mode'],
+  [/\bAgent\s+mode\b/gi, 'normal mode'],
+  // Chinese: "Write 模式" / "Chat 模式" / "写入模式" / "聊天模式" / "智能体模式"
+  [/Write\s*模式/gi, '普通模式'],
+  [/Chat\s*模式/gi, '普通模式'],
+  [/Agent\s*模式/gi, '普通模式'],
+  [/写入模式/g, '普通模式'],
+  [/聊天模式/g, '普通模式'],
+  [/智能体模式/g, '普通模式'],
+  // "Cascade 的 Write/Chat 模式" patterns
+  [/Cascade\s*的\s*(Write|Chat|Agent)\s*模式/gi, '普通模式'],
+  // "聊天面板" / "编辑器" references to Windsurf IDE UI
+  [/Windsurf\s*的?\s*聊天面板/g, '对话'],
+  [/Cascade\s*的?\s*聊天面板/g, '对话'],
+  // "switch to Write mode" / "切换到 Write 模式"
+  [/切换到\s*(Write|Chat|Agent)\s*模式/gi, '重新发起对话'],
+  [/switch(?:ing)?\s+to\s+(Write|Chat|Agent)\s+mode/gi, 'try again'],
+  // Generic standalone "Cascade" → "Claude" (broad catch-all, LAST)
+  [/\bCascade\b/g, 'Claude'],
 ];
 
 const SENSITIVE_LITERALS = [

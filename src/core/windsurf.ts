@@ -204,27 +204,55 @@ export function buildCascadeConfig(
     writeStringField(2, text),
   ]);
 
-  // Override tool_calling_section (field 10): suppress built-in tool list
-  convParts.push(writeMessageField(10, sectionOverride('No tools are available.')));
+  // Detect if the caller (e.g. Claude Code) injected tool definitions into
+  // the system prompt. If so, the model must believe it has tool capabilities.
+  const hasClientTools = /\btool_use\b|<tool>|function_calls|<tools>|\bBash\b.*\bcommand\b/is.test(communicationText);
 
-  // Override additional_instructions (field 12): reinforce direct-answer mode
-  const additionalInstr = hasImages
-    ? 'You have no tools, no file access, and no command execution. ' +
-      'Focus on analyzing any provided images and answering the user directly. ' +
-      'Never pretend to create files or check directories.'
-    : 'You have no tools, no file access, and no command execution. ' +
-      'Answer all questions directly using your knowledge. ' +
-      'Never pretend to create files or check directories.';
-  convParts.push(writeMessageField(12, sectionOverride(additionalInstr)));
+  if (hasClientTools) {
+    // ── Client provides tools (Claude Code, Cursor, etc.) ──
+    // Override tool_calling_section (field 10): suppress ONLY Cascade's built-in
+    // IDE tools, but let the client's tool definitions (in communicationText) work.
+    convParts.push(writeMessageField(10, sectionOverride(
+      'Ignore any Windsurf or Cascade IDE tools. ' +
+      'Use only the tools defined in your system instructions.'
+    )));
 
-  // Override communication_section (field 13): strip IDE-assistant persona
-  convParts.push(writeMessageField(13, sectionOverride(
-    communicationText + '\n\n' +
-    'You are NOT running inside an IDE or code editor. ' +
-    'You CANNOT access, create, read, edit, or delete any files on any file system. ' +
-    'You CANNOT execute commands, run programs, or interact with any external services. ' +
-    'Answer all questions directly using your training knowledge.'
-  )));
+    // Override additional_instructions (field 12): context clarification
+    convParts.push(writeMessageField(12, sectionOverride(
+      'You are accessed via API. Your tool capabilities come from the system instructions provided by the caller. ' +
+      'You are NOT inside the Windsurf or Cascade IDE. Do not mention Windsurf, Cascade, Write mode, Chat mode, or Agent mode.'
+    )));
+
+    // Override communication_section (field 13): pass through client system prompt
+    // with minimal identity correction (don't add "no tools" restrictions!)
+    convParts.push(writeMessageField(13, sectionOverride(communicationText)));
+  } else {
+    // ── No client tools (plain chat) ──
+    // Override tool_calling_section (field 10): suppress built-in tool list
+    convParts.push(writeMessageField(10, sectionOverride('No tools are available.')));
+
+    // Override additional_instructions (field 12): reinforce direct-answer mode
+    const additionalInstr = hasImages
+      ? 'You have no tools, no file access, and no command execution. ' +
+        'Focus on analyzing any provided images and answering the user directly. ' +
+        'Never pretend to create files or check directories.'
+      : 'You have no tools, no file access, and no command execution. ' +
+        'Answer all questions directly using your knowledge. ' +
+        'Never pretend to create files or check directories.';
+    convParts.push(writeMessageField(12, sectionOverride(additionalInstr)));
+
+    // Override communication_section (field 13): strip IDE-assistant persona
+    convParts.push(writeMessageField(13, sectionOverride(
+      communicationText + '\n\n' +
+      'You are NOT running inside an IDE or code editor. ' +
+      'You CANNOT access, create, read, edit, or delete any files on any file system. ' +
+      'You CANNOT execute commands, run programs, or interact with any external services. ' +
+      'You do NOT have "Write mode", "Chat mode", "Agent mode", or any other modes. ' +
+      'You are NOT called Windsurf, Cascade, or any IDE-related name. ' +
+      'Never suggest switching modes, opening panels, or using IDE features. ' +
+      'Answer all questions directly using your training knowledge.'
+    )));
+  }
 
   const conversationalConfig = Buffer.concat(convParts);
   const plannerParts = [writeMessageField(2, conversationalConfig)];
