@@ -110,35 +110,8 @@ function buildAnthropicToolPreamble(tools: any[]): string {
   return lines.join('\n');
 }
 
-/** Max conversation chars to keep (excluding system). Cascade can't handle 100K+ */
-const MAX_CONVERSATION_CHARS = 80_000;
-
-/**
- * Truncate conversation to fit within Cascade's context budget.
- * Keeps system messages + the most recent non-system messages that fit.
- */
-function truncateConversation(messages: any[]): any[] {
-  const system = messages.filter(m => m.role === 'system');
-  const nonSystem = messages.filter(m => m.role !== 'system');
-
-  // Measure total non-system chars
-  let totalChars = 0;
-  for (const m of nonSystem) totalChars += String(m.content).length;
-
-  if (totalChars <= MAX_CONVERSATION_CHARS) return messages;
-
-  // Keep from the end, staying within budget
-  const kept: any[] = [];
-  let budget = MAX_CONVERSATION_CHARS;
-  for (let i = nonSystem.length - 1; i >= 0; i--) {
-    const len = String(nonSystem[i].content).length;
-    if (budget - len < 0 && kept.length > 0) break;
-    kept.unshift(nonSystem[i]);
-    budget -= len;
-  }
-  log.warn(`Truncated conversation: ${nonSystem.length} → ${kept.length} msgs, ${totalChars} → ${totalChars - budget} chars`);
-  return [...system, ...kept];
-}
+/** Warn threshold for very large conversations */
+const LARGE_CONVERSATION_CHARS = 100_000;
 
 function convertMessages(body: any): any[] {
   const messages: any[] = [];
@@ -254,7 +227,12 @@ export async function handleAnthropicMessage(
       });
     }
 
-    const messages = truncateConversation(convertMessages(strippedBody));
+    const messages = convertMessages(strippedBody);
+    // Warn about very large conversations but pass through fully
+    const totalChars = messages.reduce((s, m) => s + String(m.content).length, 0);
+    if (totalChars > LARGE_CONVERSATION_CHARS) {
+      log.warn(`Large conversation: ${messages.length} msgs, ${totalChars} chars — Cascade LS may timeout`);
+    }
     const stream = !!body.stream;
     const msgId = 'msg_' + randomUUID().replace(/-/g, '').slice(0, 20);
 

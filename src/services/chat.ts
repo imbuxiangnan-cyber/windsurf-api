@@ -168,9 +168,14 @@ export async function runChatCore(
 
 function classifyAndMarkError(apiKey: string, err: any): void {
   const msg = String(err?.message || '').toLowerCase();
+  // deadline_exceeded / timeout → transient, do NOT mark as exhausted
+  if (msg.includes('deadline') || msg.includes('timeout') || msg.includes('timed out')) {
+    log.warn(`Transient error (deadline/timeout), not marking channel: ${msg.slice(0, 120)}`);
+    return; // Don't mark channel at all — it's a transient error
+  }
   if (msg.includes('rate') && msg.includes('limit')) {
     markChannelError(apiKey, 'rate_limited');
-  } else if (msg.includes('quota') || msg.includes('exhausted') || msg.includes('exceeded')) {
+  } else if (msg.includes('quota') || msg.includes('exhausted')) {
     markChannelError(apiKey, 'exhausted');
   } else if (msg.includes('unauthorized') || msg.includes('forbidden') || msg.includes('401') || msg.includes('403')) {
     markChannelError(apiKey, 'banned');
