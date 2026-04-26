@@ -118,6 +118,49 @@ function safeParseJson(s: string): any {
   return null;
 }
 
+// ─── XML tool call parser ────────────────────────────────────
+
+/**
+ * Parse XML-format tool calls inside <tool_call> blocks.
+ * Model sometimes outputs:
+ *   <tool_call><tool_name>NAME</tool_name><parameters><param>value</param>...</parameters></tool_call>
+ * instead of the JSON format we specified.
+ */
+function parseXmlToolCall(body: string): { name: string; arguments: Record<string, any> } | null {
+  // Extract tool name from <tool_name>...</tool_name>
+  const nameMatch = body.match(/<tool_name>\s*([\s\S]*?)\s*<\/tool_name>/);
+  if (!nameMatch) return null;
+  const name = nameMatch[1].trim();
+  if (!name) return null;
+
+  // Extract parameters from <parameters>...</parameters>
+  const paramsMatch = body.match(/<parameters>\s*([\s\S]*?)\s*<\/parameters>/);
+  if (!paramsMatch) return { name, arguments: {} };
+
+  const paramsContent = paramsMatch[1].trim();
+  const args: Record<string, any> = {};
+
+  // Try to parse as JSON first (sometimes params are JSON inside XML wrapper)
+  const jsonArgs = safeParseJson(paramsContent);
+  if (jsonArgs && typeof jsonArgs === 'object') return { name, arguments: jsonArgs };
+
+  // Parse individual XML param tags: <param_name>value</param_name>
+  const paramRegex = /<(\w+)>([\s\S]*?)<\/\1>/g;
+  let match;
+  while ((match = paramRegex.exec(paramsContent)) !== null) {
+    const [, paramName, paramValue] = match;
+    // Try to parse value as JSON (for objects/arrays/numbers)
+    const jsonVal = safeParseJson(paramValue);
+    if (jsonVal !== null) {
+      args[paramName] = jsonVal;
+    } else {
+      args[paramName] = paramValue.trim();
+    }
+  }
+
+  return { name, arguments: args };
+}
+
 // ─── Streaming parser ────────────────────────────────────────
 
 export interface ParsedToolCall {
@@ -221,9 +264,21 @@ export class ToolCallStreamParser {
             type: 'function',
             function: { name: parsed.name, arguments: argsJson },
           });
-          log.debug(`ToolParser: matched <tool_call> format, name=${parsed.name}`);
+          log.debug(`ToolParser: matched <tool_call> JSON format, name=${parsed.name}`);
         } else {
-          safeParts.push(`<tool_call>${body}</tool_call>`);
+          // Try XML format: <tool_name>NAME</tool_name><parameters>...</parameters>
+          const xmlTc = parseXmlToolCall(body);
+          if (xmlTc) {
+            this.callCounter++;
+            toolCalls.push({
+              id: `call_${this.callCounter}_${Date.now().toString(36)}`,
+              type: 'function',
+              function: { name: xmlTc.name, arguments: JSON.stringify(xmlTc.arguments) },
+            });
+            log.debug(`ToolParser: matched <tool_call> XML format, name=${xmlTc.name}`);
+          } else {
+            safeParts.push(`<tool_call>${body}</tool_call>`);
+          }
         }
         continue;
       }
