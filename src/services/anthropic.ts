@@ -73,11 +73,16 @@ function convertMessages(body: any): any[] {
     }
   }
 
-  // If system prompt was stripped but tools[] present, inject tool preamble
-  if (!body.system && Array.isArray(body.tools) && body.tools.length > 0) {
+  // Inject tool preamble when tools[] present
+  if (Array.isArray(body.tools) && body.tools.length > 0) {
     const preamble = buildAnthropicToolPreamble(body.tools);
     if (preamble) {
-      messages.push({ role: 'system', content: preamble });
+      // Append to existing system message or create new one
+      if (messages.length > 0 && messages[0].role === 'system') {
+        messages[0].content += '\n\n' + preamble;
+      } else {
+        messages.unshift({ role: 'system', content: preamble });
+      }
       log.info(`Injected tool preamble for ${body.tools.length} Anthropic tools`);
     }
   }
@@ -134,14 +139,10 @@ export async function handleAnthropicMessage(
     // These trigger Windsurf's content policy filter
     const strippedBody = stripMessagesPayload(body);
     if (strippedBody.system !== body.system) {
-      if (!strippedBody.system) {
-        const toolCount = Array.isArray(body.tools) ? body.tools.length : 0;
-        log.info(`Stripped system prompt (content policy)${toolCount ? `, ${toolCount} tools will be injected from body.tools` : ''}`);
-      } else {
-        const sysLen = typeof strippedBody.system === 'string' ? strippedBody.system.length
-          : Array.isArray(strippedBody.system) ? strippedBody.system.reduce((s: number, b: any) => s + (b.text?.length || 0), 0) : 0;
-        log.info(`Sanitized system prompt (${sysLen} chars kept)`);
-      }
+      const sysLen = typeof strippedBody.system === 'string' ? strippedBody.system.length
+        : Array.isArray(strippedBody.system) ? strippedBody.system.reduce((s: number, b: any) => s + (b.text?.length || 0), 0) : 0;
+      const toolCount = Array.isArray(body.tools) ? body.tools.length : 0;
+      log.info(`Replaced system prompt (${sysLen} chars)${toolCount ? ` + ${toolCount} tools from body.tools` : ''}`);
     }
 
     const modelKey = resolveModel(strippedBody.model);

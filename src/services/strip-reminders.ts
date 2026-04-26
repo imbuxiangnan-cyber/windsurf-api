@@ -67,15 +67,26 @@ export function stripText(s: string): string {
     .trim();
 }
 
+/** Clean replacement for Claude Code's system prompt (avoids content policy) */
+const CLEAN_SYSTEM_PROMPT = [
+  'You are an AI coding assistant accessed via API.',
+  'You help users with programming tasks: writing code, debugging, explaining concepts, and managing projects.',
+  'You have access to tools defined in your instructions — use them when appropriate.',
+  'Follow the user\'s instructions carefully. Be concise and direct.',
+  'When using tools, wait for the result before continuing.',
+  'Do not invent or fabricate tool results.',
+  'Respond in the same language the user uses.',
+].join('\n');
+
 /**
- * Strip the system prompt. If it's Claude Code boilerplate, drop it entirely
- * (it triggers Windsurf's content policy filter). Tool definitions are handled
- * separately via body.tools[].
+ * Strip the system prompt. If it's Claude Code boilerplate, replace with a
+ * clean substitute (the original triggers Windsurf's content policy filter).
+ * Tool definitions are injected separately via body.tools[].
  */
 function sanitizeSystemText(text: string): string | undefined {
   const stripped = stripText(text);
   if (isClaudeCodeSystemPrompt(stripped)) {
-    return undefined; // Drop — triggers content policy; tools come from body.tools
+    return CLEAN_SYSTEM_PROMPT; // Replace — original triggers content policy
   }
   return stripped || undefined;
 }
@@ -98,7 +109,7 @@ export function stripMessagesPayload(body: any): any {
       .map((b: any) => b.text)
       .join('\n');
     if (isClaudeCodeSystemPrompt(fullText)) {
-      newSystem = undefined;
+      newSystem = CLEAN_SYSTEM_PROMPT;
       changed = true;
     } else {
       const out: any[] = [];
