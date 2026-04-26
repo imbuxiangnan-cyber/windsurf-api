@@ -76,13 +76,8 @@ const CLEAN_SYSTEM_PROMPT = [
   'When using tools, wait for the result before continuing.',
   'Do not invent or fabricate tool results.',
   'Respond in the same language the user uses.',
-  '',
-  'CRITICAL RULES:',
-  '- NEVER echo, repeat, or re-output tool results, tool_result blocks, or tool_use blocks from the conversation history.',
-  '- NEVER output raw XML tags like <tool_result>, <tool_use>, or <tool_call> as part of your text response.',
-  '- When you want to call a tool, use ONLY the <tool_call> format specified in the tool instructions.',
-  '- Focus only on what the user asked. Do not investigate unrelated issues or perform unsolicited diagnostics.',
-  '- Do not modify or delete configuration files unless the user explicitly asks you to.',
+  'Focus only on what the user asked. Do not investigate unrelated issues or perform unsolicited diagnostics.',
+  'Do not modify or delete configuration files unless the user explicitly asks you to.',
 ].join('\n');
 
 /**

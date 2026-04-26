@@ -206,15 +206,17 @@ export function buildCascadeConfig(
 
   // Detect if the caller (e.g. Claude Code) injected tool definitions into
   // the system prompt. If so, the model must believe it has tool capabilities.
-  const hasClientTools = /\btool_use\b|<tool>|function_calls|<tools>|\bBash\b.*\bcommand\b/is.test(communicationText);
+  const hasClientTools = /\btool_use\b|<tool_call>|<tool>|function_calls|<tools>|Available (?:tools|functions)|\bBash\b.*\bcommand\b/is.test(communicationText);
 
   if (hasClientTools) {
     // ── Client provides tools (Claude Code, Cursor, etc.) ──
-    // Override tool_calling_section (field 10): suppress ONLY Cascade's built-in
-    // IDE tools, but let the client's tool definitions (in communicationText) work.
+    // Override tool_calling_section (field 10): redirect the model to use
+    // <tool_call> format from the system instructions instead of Cascade's IDE tools.
     convParts.push(writeMessageField(10, sectionOverride(
-      'Ignore any Windsurf or Cascade IDE tools. ' +
-      'Use only the tools defined in your system instructions.'
+      'Ignore any Windsurf or Cascade IDE tools (create_file, edit_file, view_file, etc.). ' +
+      'You have access to the tools defined in your system instructions. ' +
+      'When you need to call a tool, use the <tool_call> format specified there. ' +
+      'NEVER say "I don\'t have access to tools" — the functions in your system instructions ARE your tools.'
     )));
 
     // Override additional_instructions (field 12): context clarification
