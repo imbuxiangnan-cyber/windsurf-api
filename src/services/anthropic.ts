@@ -5,7 +5,7 @@
 import http from 'http';
 import { randomUUID } from 'crypto';
 import { log } from '../config.js';
-import { resolveModel } from '../models.js';
+import { resolveModel, isThinkingModel } from '../models.js';
 import { runChatCore, streamChatCore, StreamContext, StreamChunk, ChatError } from './chat.js';
 import { consumeQuota } from './token.js';
 import { recordRequest } from './stats.js';
@@ -106,8 +106,15 @@ export async function handleAnthropicMessage(
     const stream = !!body.stream;
     const msgId = 'msg_' + randomUUID().replace(/-/g, '').slice(0, 20);
 
-    // Extract thinking budget from Anthropic API format
-    const thinkingBudget = body.thinking?.budget_tokens || 128000;
+    // Thinking budget: maximize for thinking-capable models.
+    // For dedicated thinking models → always use max (128000)
+    // For other Claude models → use client's budget or default 128000
+    const maxBudget = modelKey.includes('opus') ? 128000 : 64000;
+    const clientBudget = body.thinking?.budget_tokens;
+    const thinkingBudget = isThinkingModel(modelKey)
+      ? maxBudget  // Force maximum for thinking models
+      : (clientBudget || maxBudget);
+    log.debug(`Thinking: model=${modelKey}, budget=${thinkingBudget} (client requested: ${clientBudget ?? 'none'})`);
 
     if (stream) {
       let headersSent = false;

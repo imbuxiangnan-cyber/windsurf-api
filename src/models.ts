@@ -141,10 +141,18 @@ export function listModels() {
   }));
 }
 
+/** Check if a model key is a thinking-capable model */
+export function isThinkingModel(id: string): boolean {
+  return id.includes('thinking') || id.includes('opus-4-7');
+}
+
 export function listAnthropicModels() {
   const now = new Date().toISOString();
   const cap = { supported: true };
-  const capThinking = { supported: true, types: { adaptive: { supported: true }, enabled: { supported: true } } };
+  // All Claude models report thinking capability — Cascade enables it via brain config.
+  // Thinking-dedicated models get both adaptive + enabled; others get enabled only.
+  const capThinkingFull = { supported: true, types: { adaptive: { supported: true }, enabled: { supported: true } } };
+  const capThinkingBasic = { supported: true, types: { enabled: { supported: true } } };
 
   const claudeModels = Object.entries(MODELS)
     .filter(([_, info]) => info.provider === 'anthropic')
@@ -156,7 +164,7 @@ export function listAnthropicModels() {
       max_tokens: id.includes('opus') ? 128000 : 64000,
       capabilities: {
         code_execution: cap,
-        thinking: id.includes('thinking') || id.includes('opus-4-7') ? capThinking : cap,
+        thinking: isThinkingModel(id) ? capThinkingFull : capThinkingBasic,
         structured_outputs: cap,
         image_input: cap,
       },
