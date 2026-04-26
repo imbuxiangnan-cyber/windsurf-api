@@ -55,8 +55,10 @@ function buildAnthropicToolPreamble(tools: any[]): string {
     '4. After emitting the last <tool_call> block, STOP. Do not write any explanation after it. The caller executes the functions and returns results in the next turn.',
     '5. NEVER say "I don\'t have access to tools" or "I cannot perform that action" — the functions listed below ARE your available tools.',
     '6. When a function is relevant to the user\'s request, you SHOULD call it rather than answering from memory.',
-    '7. ONLY use function names from the list below. Do NOT use: read_file, view_file, create_file, edit_file, run_command, command, search_replace, file_search, code_search, update_plan, grep_search. These names DO NOT EXIST.',
+    '7. ONLY use function names from the list below. Do NOT use: read_file, view_file, create_file, edit_file, run_command, command, search_replace, file_search, code_search, update_plan, grep_search, list_directory, ViewFile, RunCommand. These names DO NOT EXIST.',
     '8. The "name" field in your <tool_call> MUST exactly match one of the function names listed below.',
+    '9. The Bash tool runs in a Linux/Unix shell (not Windows CMD). Use Unix commands: cat (not type), ls (not dir), cp/mv/rm (not copy/move/del). For Windows paths, use forward slashes: /c/Users/... or /mnt/c/Users/...',
+    '10. Do NOT repeatedly call the same tool with the same arguments. If a tool result was already returned, use it directly.',
     '',
     'Available functions:',
   ];
@@ -278,8 +280,9 @@ export async function handleAnthropicMessage(
       function fixToolArgs(fixedName: string, originalName: string, input: any): any {
         if (fixedName === originalName || typeof input !== 'object' || !input) return input;
         const mapped = { ...input };
-        // read_file/view_file → Read: target_file → file_path
-        if (originalName === 'read_file' || originalName === 'view_file') {
+        // read_file/view_file/ViewFile/ReadFile → Read: target_file → file_path
+        const readLike = ['read_file', 'view_file', 'ViewFile', 'ReadFile', 'read_file_content', 'view_code_item', 'cat'];
+        if (readLike.includes(originalName)) {
           if (mapped.target_file && !mapped.file_path) {
             mapped.file_path = mapped.target_file;
             delete mapped.target_file;
@@ -288,8 +291,9 @@ export async function handleAnthropicMessage(
             delete mapped.should_read_entire_file;
           }
         }
-        // run_command/command → Bash: command → command (same), working_directory → description
-        if (originalName === 'run_command' || originalName === 'command') {
+        // run_command/command/shell/RunCommand/exec → Bash: working_directory → cd prefix
+        const bashLike = ['run_command', 'command', 'shell', 'RunCommand', 'execute_command', 'exec', 'terminal'];
+        if (bashLike.includes(originalName)) {
           if (mapped.working_directory) {
             // Bash doesn't have working_directory — prepend cd
             if (mapped.command && !mapped.command.startsWith('cd ')) {

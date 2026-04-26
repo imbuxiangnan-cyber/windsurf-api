@@ -1,6 +1,6 @@
 {
   "name": "windsurf-api",
-  "version": "1.7.20",
+  "version": "1.7.21",
   "description": "Turn your Windsurf subscription into an OpenAI/Anthropic-compatible API server",
   "type": "module",
   "license": "MIT",
