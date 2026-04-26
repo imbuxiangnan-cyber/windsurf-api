@@ -151,6 +151,7 @@ export class WindsurfClient {
     const thinkingByStep = new Map<number, number>();
     const yieldedToolByStep = new Set<number>();
     const seenToolCallIds = new Set<string>();
+    const seenErrorMsgs = new Set<string>();
     const startTime = Date.now();
     const pollInterval = 250;
     let idleCount = 0;
@@ -225,8 +226,11 @@ export class WindsurfClient {
             (err as any).isModelError = true;
             throw err;
           }
-          // Already have output — log and continue (tool artifact)
-          log.warn(`Cascade non-fatal error step: ${errText.slice(0, 120)}`);
+          // Already have output — log once per unique message and continue
+          if (!seenErrorMsgs.has(errText)) {
+            seenErrorMsgs.add(errText);
+            log.warn(`Cascade non-fatal error step: ${errText.slice(0, 120)}`);
+          }
         }
       }
 
