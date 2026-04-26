@@ -35,41 +35,52 @@ function getApiKey(req: http.IncomingMessage): string | null {
 
 /**
  * Build a tool preamble from Anthropic-format tools[].
- * Claude Code sends tools in the `tools` parameter; when we strip its system
- * prompt (to avoid content policy), we need to re-inject tool awareness.
+ * Claude Code sends tools in the `tools` parameter; when we replace its system
+ * prompt, we need to re-inject tool awareness with authoritative instructions.
+ *
+ * Based on dwgx/WindsurfAPI's proven format with numbered rules.
  */
 function buildAnthropicToolPreamble(tools: any[]): string {
   if (!tools || tools.length === 0) return '';
+
   const lines: string[] = [
-    'You have access to the following tools. To call a tool, output a JSON block wrapped in <tool_call> tags.',
-    'Format: <tool_call>{"name": "tool_name", "arguments": {...}}</tool_call>',
-    'You may call multiple tools by outputting multiple <tool_call> blocks.',
-    'After the tool results are provided, continue your response.',
+    'You have access to the following functions. To invoke a function, emit a block in this EXACT format:',
     '',
-    'Available tools:',
+    '<tool_call>{"name":"<function_name>","arguments":{...}}</tool_call>',
+    '',
+    'Rules:',
+    '1. Each <tool_call>...</tool_call> block must fit on ONE line (no line breaks inside the JSON).',
+    '2. "arguments" must be a JSON object matching the function\'s parameter schema.',
+    '3. You MAY emit MULTIPLE <tool_call> blocks if the request requires calling several functions. Emit ALL needed calls consecutively, then STOP generating.',
+    '4. After emitting the last <tool_call> block, STOP. Do not write any explanation after it. The caller executes the functions and returns results in the next turn.',
+    '5. NEVER say "I don\'t have access to tools" or "I cannot perform that action" — the functions listed below ARE your available tools.',
+    '6. When a function is relevant to the user\'s request, you SHOULD call it rather than answering from memory.',
+    '',
+    'Available functions:',
   ];
+
+  // For Claude Code with 30+ tools, use compact format (names + descriptions only)
+  // to avoid blowing past upstream payload limits
+  const useCompact = tools.length > 15;
+
   for (const tool of tools) {
     if (!tool.name) continue;
-    lines.push(`- ${tool.name}: ${tool.description || '(no description)'}`);
-    if (tool.input_schema) {
-      lines.push(`  Input schema: ${JSON.stringify(tool.input_schema)}`);
+    if (useCompact) {
+      lines.push(`- ${tool.name}: ${tool.description || '(no description)'}`);
+    } else {
+      lines.push('');
+      lines.push(`### ${tool.name}`);
+      if (tool.description) lines.push(tool.description);
+      if (tool.input_schema) {
+        lines.push('Parameters:');
+        lines.push('```json');
+        lines.push(JSON.stringify(tool.input_schema, null, 2));
+        lines.push('```');
+      }
     }
   }
   lines.push('');
   return lines.join('\n');
-}
-
-/** Strip echoed tool XML from text output (model sometimes echoes history) */
-const ECHOED_TOOL_XML = /<\/?(?:tool_result|tool_use|tool_call)[^>]*>[\s\S]*?(?:<\/(?:tool_result|tool_use|tool_call)>|$)/g;
-const ECHOED_TOOL_TAGS = /<\/?(?:tool_result|tool_use)[^>]*>/g;
-
-function stripEchoedToolXml(text: string): string {
-  // First try to strip complete blocks
-  let cleaned = text.replace(ECHOED_TOOL_XML, '');
-  // Then strip any remaining orphan tags
-  cleaned = cleaned.replace(ECHOED_TOOL_TAGS, '');
-  // Clean up excess whitespace from removal
-  return cleaned.replace(/\n{3,}/g, '\n\n').trim();
 }
 
 function convertMessages(body: any): any[] {
@@ -107,26 +118,45 @@ function convertMessages(body: any): any[] {
         // Check if content has image blocks — if so, preserve array for multimodal extraction
         const hasImages = msg.content.some((b: any) => b.type === 'image');
         if (hasImages) {
-          // Preserve content array for image extraction in client.ts
           messages.push({ role: msg.role, content: msg.content });
-        } else {
-          // Text-only: extract and serialize
-          const parts: string[] = [];
-          for (const block of msg.content) {
-            if (block.type === 'text' && block.text) {
-              parts.push(block.text);
-            } else if (block.type === 'thinking' && block.thinking) {
-              parts.push(`<thinking>\n${block.thinking}\n</thinking>`);
-            } else if (block.type === 'tool_use') {
-              parts.push(`<tool_use id="${block.id}" name="${block.name}">\n${JSON.stringify(block.input)}\n</tool_use>`);
-            } else if (block.type === 'tool_result') {
-              const resultContent = typeof block.content === 'string' ? block.content
-                : Array.isArray(block.content) ? block.content.map((b: any) => b.text || '').join('\n') : '';
-              parts.push(`<tool_result tool_use_id="${block.tool_use_id}">\n${resultContent}\n</tool_result>`);
-            }
+          continue;
+        }
+
+        // Separate text, tool_calls, and tool_results
+        const textParts: string[] = [];
+        const toolCallParts: string[] = [];
+        const toolResults: { id: string; content: string }[] = [];
+
+        for (const block of msg.content) {
+          if (block.type === 'text' && block.text) {
+            textParts.push(block.text);
+          } else if (block.type === 'thinking') {
+            // Skip — model regenerates thinking
+          } else if (block.type === 'tool_use') {
+            // Convert to <tool_call> format (matching our parser/preamble)
+            const input = block.input ?? {};
+            toolCallParts.push(`<tool_call>${JSON.stringify({ name: block.name, arguments: input })}</tool_call>`);
+          } else if (block.type === 'tool_result') {
+            const resultContent = typeof block.content === 'string' ? block.content
+              : Array.isArray(block.content) ? block.content.map((b: any) => b.text || '').join('\n') : '';
+            toolResults.push({ id: block.tool_use_id || '', content: resultContent });
           }
-          const content = parts.join('\n');
-          if (content) messages.push({ role: msg.role, content });
+        }
+
+        // Assistant messages with tool_calls
+        if (msg.role === 'assistant' && toolCallParts.length > 0) {
+          const parts = [...textParts, ...toolCallParts];
+          messages.push({ role: 'assistant', content: parts.join('\n') });
+        } else if (textParts.length > 0) {
+          messages.push({ role: msg.role, content: textParts.join('\n') });
+        }
+
+        // Tool results → separate user messages with <tool_result> wrapper
+        for (const tr of toolResults) {
+          messages.push({
+            role: 'user',
+            content: `<tool_result tool_call_id="${tr.id}">\n${tr.content}\n</tool_result>`,
+          });
         }
       }
     }
@@ -320,12 +350,7 @@ export async function handleAnthropicMessage(
           // Text deltas → text block (sanitized, auto-closes thinking block first)
           // When tools are present, parse <tool_call> blocks from text
           if (chunk.text) {
-            let safeText = textSanitizer.feed(chunk.text);
-            // Strip echoed tool XML from text (model sometimes echoes history)
-            if (safeText && ECHOED_TOOL_TAGS.test(safeText)) {
-              ECHOED_TOOL_TAGS.lastIndex = 0;
-              safeText = safeText.replace(ECHOED_TOOL_TAGS, '').replace(/\n{3,}/g, '\n\n');
-            }
+            const safeText = textSanitizer.feed(chunk.text);
             if (safeText && toolParser) {
               const parsed = toolParser.feed(safeText);
               if (parsed.text) {
