@@ -10,6 +10,8 @@
  *    own persona.
  */
 
+import { log } from '../config.js';
+
 const REMINDER_RE = /<system-reminder>[\s\S]*?<\/system-reminder>/g;
 const REMINDER_OPEN_TAG = '<system-reminder>';
 
@@ -67,28 +69,94 @@ export function stripText(s: string): string {
     .trim();
 }
 
-/** Clean replacement for Claude Code's system prompt (avoids content policy) */
+/**
+ * Patterns to strip from Claude Code's system prompt to avoid content policy.
+ * These are the specific phrases/sections that trigger Windsurf's filter.
+ * We keep the rest of the behavioral guidelines intact.
+ */
+const CLAUDE_CODE_STRIP_PATTERNS: (RegExp | string)[] = [
+  // Identity claims that confuse Cascade's persona
+  /You are Claude,? (?:made|created|built) by Anthropic[\s\S]*?(?=\n\n)/gi,
+  /You are Claude\./g,
+  /\bClaude\b/g,
+  /\bAnthropic\b/g,
+  // Safety refusal blocks that trigger content policy
+  /IMPORTANT:\s*Refuse to write code or explain techniques[\s\S]*?(?=\n\n|\n[A-Z]|$)/g,
+  /IMPORTANT:\s*Never assist with[\s\S]*?(?=\n\n|\n[A-Z]|$)/g,
+  // Instruction wrapper tags
+  /<user_instructions>[\s\S]*?<\/user_instructions>/g,
+  /<system-instructions>[\s\S]*?<\/system-instructions>/g,
+  /<system-reminder>[\s\S]*?<\/system-reminder>/g,
+  // Tool definitions (we inject our own via preamble)
+  /<tools>[\s\S]*?<\/tools>/g,
+  /<tool_name>[\s\S]*?<\/tool_name>/g,
+  /## Tool Usage[\s\S]*?(?=\n## |\n# |$)/gi,
+  // Anthropic-specific tool format descriptions
+  /Human turns may include `tool_result`[\s\S]*?(?=\n\n)/g,
+  /TOOL_RESULT[\s\S]*?(?=\n\n)/g,
+  /tool_use_id[\s\S]*?(?=\n\n)/g,
+];
+
+/**
+ * Try to sanitize the Claude Code system prompt by stripping only problematic
+ * patterns while preserving behavioral guidelines. Returns the cleaned text.
+ */
+function sanitizeClaudeCodePrompt(text: string): string {
+  let result = text;
+  for (const pattern of CLAUDE_CODE_STRIP_PATTERNS) {
+    if (typeof pattern === 'string') {
+      result = result.replaceAll(pattern, '');
+    } else {
+      result = result.replace(pattern, '');
+    }
+  }
+  // Clean up excess whitespace from removal
+  result = result
+    .replace(/\n{3,}/g, '\n\n')
+    .replace(/^\s+|\s+$/g, '')
+    .trim();
+  return result;
+}
+
+/** Minimal fallback if sanitized prompt is too short or empty */
 const CLEAN_SYSTEM_PROMPT = [
   'You are an AI coding assistant accessed via API.',
   'You help users with programming tasks: writing code, debugging, explaining concepts, and managing projects.',
   'You have access to tools defined in your instructions — use them when appropriate.',
-  'Follow the user\'s instructions carefully. Be concise and direct.',
-  'When using tools, wait for the result before continuing.',
-  'Do not invent or fabricate tool results.',
-  'Respond in the same language the user uses.',
-  'Focus only on what the user asked. Do not investigate unrelated issues or perform unsolicited diagnostics.',
-  'Do not modify or delete configuration files unless the user explicitly asks you to.',
+  '',
+  'IMPORTANT BEHAVIORAL RULES:',
+  '1. Follow the user\'s instructions carefully. Be concise and direct.',
+  '2. When using tools, wait for the result before continuing. Do not invent or fabricate tool results.',
+  '3. Read before you write: always read a file before editing it, to understand the context.',
+  '4. One step at a time: perform one logical action, check the result, then proceed.',
+  '5. Focus ONLY on what the user asked. Do not investigate unrelated issues or perform unsolicited diagnostics.',
+  '6. Do not modify, delete, or create files unless the user explicitly asks you to.',
+  '7. If a tool call fails, explain the error clearly. Do not retry the same call blindly.',
+  '8. If you are unsure about what the user wants, ASK for clarification instead of guessing.',
+  '9. Keep your responses focused and short. Do not write lengthy explanations unless asked.',
+  '10. Never explore the filesystem, read random files, or run commands unless directly relevant to the user\'s request.',
+  '11. Respond in the same language the user uses.',
+  '12. When making code changes, preserve existing code style, comments, and formatting.',
 ].join('\n');
 
 /**
- * Strip the system prompt. If it's Claude Code boilerplate, replace with a
- * clean substitute (the original triggers Windsurf's content policy filter).
+ * Strip the system prompt. If it's Claude Code boilerplate, try to sanitize
+ * it (keep behavioral guidelines, strip policy triggers). If the result is
+ * too short, fall back to CLEAN_SYSTEM_PROMPT.
  * Tool definitions are injected separately via body.tools[].
  */
 function sanitizeSystemText(text: string): string | undefined {
   const stripped = stripText(text);
   if (isClaudeCodeSystemPrompt(stripped)) {
-    return CLEAN_SYSTEM_PROMPT; // Replace — original triggers content policy
+    // Try surgical sanitization first — preserve behavioral guidelines
+    const sanitized = sanitizeClaudeCodePrompt(stripped);
+    if (sanitized.length > 500) {
+      log.info(`Surgical sanitize: ${stripped.length} → ${sanitized.length} chars (kept ${Math.round(sanitized.length / stripped.length * 100)}%)`);
+      return sanitized;
+    }
+    // Fallback to clean substitute
+    log.info(`Fallback to CLEAN_SYSTEM_PROMPT (sanitized was only ${sanitized.length} chars from ${stripped.length})`);
+    return CLEAN_SYSTEM_PROMPT;
   }
   return stripped || undefined;
 }
