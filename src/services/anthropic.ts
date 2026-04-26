@@ -98,7 +98,9 @@ export async function handleAnthropicMessage(
     // These trigger Windsurf's content policy filter
     const strippedBody = stripMessagesPayload(body);
     if (strippedBody.system !== body.system) {
-      log.info(`Stripped system prompt (was ${body.system ? 'present' : 'absent'}, now ${strippedBody.system ? 'sanitized' : 'removed'})`);
+      const sysLen = typeof strippedBody.system === 'string' ? strippedBody.system.length
+        : Array.isArray(strippedBody.system) ? strippedBody.system.reduce((s: number, b: any) => s + (b.text?.length || 0), 0) : 0;
+      log.info(`Sanitized system prompt (${sysLen} chars kept)`);
     }
 
     const modelKey = resolveModel(strippedBody.model);

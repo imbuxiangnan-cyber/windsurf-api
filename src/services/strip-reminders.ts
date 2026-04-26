@@ -68,16 +68,14 @@ export function stripText(s: string): string {
 }
 
 /**
- * Strip the system prompt from a text that contains Claude Code boilerplate.
- * Returns undefined if the entire prompt should be dropped.
+ * Strip problematic parts of a system prompt while preserving tool definitions.
+ * Claude Code's system prompt contains critical tool definitions — we must keep
+ * those. Only strip content-policy-triggering patterns and system-reminders.
  */
 function sanitizeSystemText(text: string): string | undefined {
-  // First strip <system-reminder> blocks
+  // Strip <system-reminder> blocks and content-policy patterns
   const stripped = stripText(text);
-  // Then check if it's Claude Code boilerplate
-  if (isClaudeCodeSystemPrompt(stripped)) {
-    return undefined; // Drop entirely — Cascade has its own persona
-  }
+  // Return cleaned text (even if it's Claude Code boilerplate — tool defs are needed)
   return stripped || undefined;
 }
 
@@ -85,7 +83,7 @@ export function stripMessagesPayload(body: any): any {
   if (!body) return body;
   let changed = false;
 
-  // Sanitize system field — drop Claude Code boilerplate entirely
+  // Sanitize system field — strip problematic patterns, keep tool definitions
   let newSystem = body.system;
   if (typeof body.system === 'string') {
     const sanitized = sanitizeSystemText(body.system);
@@ -94,28 +92,18 @@ export function stripMessagesPayload(body: any): any {
       changed = true;
     }
   } else if (Array.isArray(body.system)) {
-    const fullText = body.system
-      .filter((b: any) => b.type === 'text')
-      .map((b: any) => b.text)
-      .join('\n');
-    if (isClaudeCodeSystemPrompt(fullText)) {
-      // Drop entire system prompt array — it's Claude Code boilerplate
-      newSystem = undefined;
-      changed = true;
-    } else {
-      const out: any[] = [];
-      for (const b of body.system) {
-        if (b.type === 'text') {
-          const t = stripText(b.text);
-          if (t.length === 0) { changed = true; continue; }
-          if (t !== b.text) { changed = true; out.push({ ...b, text: t }); }
-          else out.push(b);
-        } else {
-          out.push(b);
-        }
+    const out: any[] = [];
+    for (const b of body.system) {
+      if (b.type === 'text') {
+        const t = stripText(b.text);
+        if (t.length === 0) { changed = true; continue; }
+        if (t !== b.text) { changed = true; out.push({ ...b, text: t }); }
+        else out.push(b);
+      } else {
+        out.push(b);
       }
-      if (changed) newSystem = out.length > 0 ? out : undefined;
     }
+    if (changed) newSystem = out.length > 0 ? out : undefined;
   }
 
   // Strip <system-reminder> from user/assistant messages
