@@ -87,8 +87,12 @@ export async function handleAnthropicMessage(
       });
     }
 
-    // Strip <system-reminder> blocks before forwarding (prevents false refusals)
+    // Strip Claude Code boilerplate system prompt + <system-reminder> blocks
+    // These trigger Windsurf's content policy filter
     const strippedBody = stripMessagesPayload(body);
+    if (strippedBody.system !== body.system) {
+      log.info(`Stripped system prompt (was ${body.system ? 'present' : 'absent'}, now ${strippedBody.system ? 'sanitized' : 'removed'})`);
+    }
 
     const modelKey = resolveModel(strippedBody.model);
     if (!modelKey) {
