@@ -32,6 +32,28 @@ function getApiKey(req: http.IncomingMessage): string | null {
   return m ? m[1] : null;
 }
 
+/**
+ * Build a tool preamble from Anthropic-format tools[].
+ * Claude Code sends tools in the `tools` parameter; when we strip its system
+ * prompt (to avoid content policy), we need to re-inject tool awareness.
+ */
+function buildAnthropicToolPreamble(tools: any[]): string {
+  if (!tools || tools.length === 0) return '';
+  const lines: string[] = [
+    'You have access to the following tools. To use a tool, respond with a tool_use content block.',
+    '',
+    'Available tools:',
+  ];
+  for (const tool of tools) {
+    if (!tool.name) continue;
+    lines.push(`- ${tool.name}: ${tool.description || '(no description)'}`);
+    if (tool.input_schema) {
+      lines.push(`  Input schema: ${JSON.stringify(tool.input_schema)}`);
+    }
+  }
+  return lines.join('\n');
+}
+
 function convertMessages(body: any): any[] {
   const messages: any[] = [];
   if (body.system) {
@@ -43,6 +65,15 @@ function convertMessages(body: any): any[] {
         .map((b: any) => b.text)
         .join('\n');
       if (systemText) messages.push({ role: 'system', content: systemText });
+    }
+  }
+
+  // If system prompt was stripped but tools[] present, inject tool preamble
+  if (!body.system && Array.isArray(body.tools) && body.tools.length > 0) {
+    const preamble = buildAnthropicToolPreamble(body.tools);
+    if (preamble) {
+      messages.push({ role: 'system', content: preamble });
+      log.info(`Injected tool preamble for ${body.tools.length} Anthropic tools`);
     }
   }
   if (Array.isArray(body.messages)) {
@@ -98,9 +129,14 @@ export async function handleAnthropicMessage(
     // These trigger Windsurf's content policy filter
     const strippedBody = stripMessagesPayload(body);
     if (strippedBody.system !== body.system) {
-      const sysLen = typeof strippedBody.system === 'string' ? strippedBody.system.length
-        : Array.isArray(strippedBody.system) ? strippedBody.system.reduce((s: number, b: any) => s + (b.text?.length || 0), 0) : 0;
-      log.info(`Sanitized system prompt (${sysLen} chars kept)`);
+      if (!strippedBody.system) {
+        const toolCount = Array.isArray(body.tools) ? body.tools.length : 0;
+        log.info(`Stripped system prompt (content policy)${toolCount ? `, ${toolCount} tools will be injected from body.tools` : ''}`);
+      } else {
+        const sysLen = typeof strippedBody.system === 'string' ? strippedBody.system.length
+          : Array.isArray(strippedBody.system) ? strippedBody.system.reduce((s: number, b: any) => s + (b.text?.length || 0), 0) : 0;
+        log.info(`Sanitized system prompt (${sysLen} chars kept)`);
+      }
     }
 
     const modelKey = resolveModel(strippedBody.model);
