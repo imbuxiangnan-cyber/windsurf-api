@@ -230,20 +230,49 @@ export async function handleAnthropicMessage(
       if (hasTools) {
         for (const t of body.tools) if (t.name) validToolNames.add(t.name);
       }
-      // Map Cascade IDE tool names to likely Claude Code equivalents
+      // Map ALL known IDE/Cascade/variant tool names to likely Claude Code equivalents.
+      // The model tries dozens of wrong names — we map them all.
       const CASCADE_TO_CLAUDE: Record<string, string[]> = {
-        read_file: ['Read', 'read_file', 'ReadFiles'],
-        view_file: ['Read', 'read_file', 'ReadFiles'],
-        create_file: ['Write', 'write_to_file', 'CreateFile'],
-        edit_file: ['Edit', 'MultiEdit', 'edit_file'],
-        run_command: ['Bash', 'execute_command', 'RunCommand'],
-        command: ['Bash', 'execute_command', 'RunCommand'],
-        search_replace: ['Edit', 'MultiEdit', 'SearchReplace'],
-        grep_search: ['Grep', 'grep_search', 'Search'],
-        file_search: ['Search', 'find_by_name', 'ListDir'],
-        code_search: ['Search', 'code_search', 'Grep'],
-        update_plan: ['TodoWrite', 'todo_write', 'UpdatePlan'],
-        list_dir: ['ListDir', 'list_dir', 'ListDirectory'],
+        // Reading files
+        read_file: ['Read', 'read_file', 'ReadFiles', 'read'],
+        view_file: ['Read', 'read_file', 'ReadFiles', 'read'],
+        ReadFile: ['Read', 'read_file', 'ReadFiles', 'read'],
+        read_file_content: ['Read', 'read_file', 'ReadFiles', 'read'],
+        view_code_item: ['Read', 'read_file', 'ReadFiles', 'read'],
+        cat: ['Read', 'read_file', 'ReadFiles', 'read'],
+        // Writing/creating files
+        create_file: ['Write', 'write_to_file', 'CreateFile', 'write'],
+        write_file: ['Write', 'write_to_file', 'CreateFile', 'write'],
+        WriteFile: ['Write', 'write_to_file', 'CreateFile', 'write'],
+        // Editing files
+        edit_file: ['Edit', 'MultiEdit', 'edit_file', 'edit'],
+        search_replace: ['Edit', 'MultiEdit', 'SearchReplace', 'edit'],
+        EditFile: ['Edit', 'MultiEdit', 'edit_file', 'edit'],
+        // Running commands
+        run_command: ['Bash', 'execute_command', 'RunCommand', 'bash'],
+        command: ['Bash', 'execute_command', 'RunCommand', 'bash'],
+        shell: ['Bash', 'execute_command', 'RunCommand', 'bash'],
+        execute_command: ['Bash', 'execute_command', 'RunCommand', 'bash'],
+        RunCommand: ['Bash', 'execute_command', 'RunCommand', 'bash'],
+        exec: ['Bash', 'execute_command', 'RunCommand', 'bash'],
+        terminal: ['Bash', 'execute_command', 'RunCommand', 'bash'],
+        // Searching
+        grep_search: ['Grep', 'grep_search', 'Search', 'search', 'grep'],
+        file_search: ['Search', 'find_by_name', 'ListDir', 'search', 'Glob'],
+        code_search: ['Search', 'code_search', 'Grep', 'search', 'grep'],
+        search_files: ['Search', 'find_by_name', 'Grep', 'search', 'grep'],
+        search_code: ['Search', 'code_search', 'Grep', 'search', 'grep'],
+        SearchFiles: ['Search', 'find_by_name', 'Grep', 'search'],
+        CodeSearch: ['Search', 'code_search', 'Grep', 'search'],
+        find_by_name: ['Search', 'find_by_name', 'Glob', 'search'],
+        // Listing
+        list_dir: ['ListDir', 'list_dir', 'ListDirectory', 'list_directory', 'ls'],
+        list_directory: ['ListDir', 'list_dir', 'ListDirectory', 'list_directory', 'ls'],
+        ListDirectory: ['ListDir', 'list_dir', 'ListDirectory', 'list_directory', 'ls'],
+        // Planning/todos
+        update_plan: ['TodoWrite', 'todo_write', 'UpdatePlan', 'todowrite'],
+        // Web
+        web_search: ['WebSearch', 'web_search', 'search_web'],
       };
       // Remap Cascade argument names to Claude Code equivalents
       function fixToolArgs(fixedName: string, originalName: string, input: any): any {
@@ -273,6 +302,7 @@ export async function handleAnthropicMessage(
       }
       function fixToolName(name: string): string {
         if (validToolNames.has(name)) return name;
+        // 1. Exact lookup in mapping table
         const candidates = CASCADE_TO_CLAUDE[name] || CASCADE_TO_CLAUDE[name.toLowerCase()];
         if (candidates) {
           for (const c of candidates) {
@@ -282,11 +312,49 @@ export async function handleAnthropicMessage(
             }
           }
         }
-        // Try case-insensitive match
+        // 2. Case-insensitive exact match
         for (const v of validToolNames) {
           if (v.toLowerCase() === name.toLowerCase()) {
             log.warn(`Mapped tool "${name}" → "${v}" (case fix)`);
             return v;
+          }
+        }
+        // 3. Normalize: strip underscores/hyphens, compare lowercase
+        const normalized = name.toLowerCase().replace(/[-_]/g, '');
+        for (const v of validToolNames) {
+          if (v.toLowerCase().replace(/[-_]/g, '') === normalized) {
+            log.warn(`Mapped tool "${name}" → "${v}" (normalized)`);
+            return v;
+          }
+        }
+        // 4. Semantic category match: find the first valid tool that belongs
+        //    to the same category (read→Read, write→Write, bash→Bash, etc.)
+        const CATEGORY_KEYWORDS: Record<string, string[]> = {
+          read: ['read', 'view', 'cat', 'get', 'show', 'display', 'open'],
+          write: ['write', 'create', 'new', 'make', 'save'],
+          edit: ['edit', 'modify', 'update', 'replace', 'change', 'patch', 'search_replace'],
+          bash: ['run', 'command', 'exec', 'shell', 'terminal', 'bash', 'cmd'],
+          search: ['search', 'find', 'grep', 'locate', 'query', 'lookup'],
+          list: ['list', 'ls', 'dir', 'directory', 'tree'],
+          todo: ['todo', 'plan', 'task'],
+          web: ['web', 'url', 'http', 'fetch', 'browse'],
+        };
+        const nameLower = name.toLowerCase().replace(/[-_]/g, '');
+        for (const [_category, keywords] of Object.entries(CATEGORY_KEYWORDS)) {
+          if (keywords.some(kw => nameLower.includes(kw))) {
+            // Check mapping table for any matching category keyword
+            for (const kw of keywords) {
+              for (const [mapKey, mapCandidates] of Object.entries(CASCADE_TO_CLAUDE)) {
+                if (mapKey.toLowerCase().includes(kw)) {
+                  for (const c of mapCandidates) {
+                    if (validToolNames.has(c)) {
+                      log.warn(`Mapped tool "${name}" → "${c}" (category: ${kw})`);
+                      return c;
+                    }
+                  }
+                }
+              }
+            }
           }
         }
         log.warn(`Unknown tool name "${name}" — not in client's ${validToolNames.size} tools`);
