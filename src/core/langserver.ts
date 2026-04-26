@@ -224,7 +224,14 @@ export async function startLanguageServer(opts: {
   });
   proc.stderr?.on('data', (d: Buffer) => {
     const line = d.toString().trim();
-    if (line) log.warn('[LS:err]', line.slice(0, 200));
+    if (!line) return;
+    // Demote routine LS diagnostic noise to debug
+    const isNoise = /maxprocs:|tool_converter_factory|lock_file|child_lock|GOMAXPROCS|Attempting to connect|Successfully connected|Language server (listening|will attempt)|Starting language server|server\.go:\d+|main\.go:\d+/.test(line);
+    if (isNoise) {
+      log.debug('[LS]', line.slice(0, 200));
+    } else {
+      log.warn('[LS:err]', line.slice(0, 200));
+    }
   });
   const MAX_RESTARTS = 3;
   proc.on('exit', (code) => {

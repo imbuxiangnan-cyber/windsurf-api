@@ -14,6 +14,8 @@ import { recordRequest } from './stats.js';
 import { WindsurfClient } from '../core/client.js';
 import { getLsPort, getCsrfToken } from '../core/langserver.js';
 import { applyMapping, waitForConcurrency, releaseConcurrency } from './routing.js';
+import { PathSanitizeStream, sanitizeText } from './sanitize.js';
+import { buildToolPreamble, convertToolMessages, ToolCallStreamParser, ParsedToolCall } from './tool-emulation.js';
 
 export class ChatError extends Error {
   constructor(message: string, public statusCode: number) {
@@ -45,6 +47,10 @@ export interface StreamContext {
   channel: Channel;
   authKey: string;
   promptTokens: number;
+  serverInputTokens?: number;
+  serverOutputTokens?: number;
+  cacheReadTokens?: number;
+  cacheWriteTokens?: number;
 }
 
 /**
@@ -57,6 +63,7 @@ export interface StreamChunk {
   stepKind?: string | null;
   toolCalls?: any[];
   runCommand?: any;
+  serverUsage?: { inputTokens: number; outputTokens: number; cacheReadTokens: number; cacheWriteTokens: number } | null;
   ctx: StreamContext;
 }
 
@@ -103,12 +110,20 @@ export async function* streamChatCore(
     });
 
     for await (const chunk of gen) {
+      // Capture server-reported usage into ctx when it arrives
+      if (chunk.serverUsage) {
+        ctx.serverInputTokens = chunk.serverUsage.inputTokens;
+        ctx.serverOutputTokens = chunk.serverUsage.outputTokens;
+        ctx.cacheReadTokens = chunk.serverUsage.cacheReadTokens;
+        ctx.cacheWriteTokens = chunk.serverUsage.cacheWriteTokens;
+      }
       yield {
         text: chunk.text || '',
         thinking: chunk.thinking || '',
         stepKind: chunk.stepKind,
         toolCalls: chunk.toolCalls,
         runCommand: chunk.runCommand,
+        serverUsage: chunk.serverUsage,
         ctx,
       };
     }
@@ -196,15 +211,33 @@ export async function handleChatCompletion(
     const chatId = 'chatcmpl-' + randomUUID().replace(/-/g, '').slice(0, 20);
     const created = Math.floor(Date.now() / 1000);
 
+    // Tool emulation: inject preamble and convert tool messages
+    const hasTools = Array.isArray((body as any).tools) && (body as any).tools.length > 0;
+    let chatMessages = body.messages;
+    if (hasTools) {
+      const preamble = buildToolPreamble((body as any).tools);
+      chatMessages = convertToolMessages([...chatMessages]);
+      // Prepend tool preamble to system prompt
+      const sysIdx = chatMessages.findIndex((m: any) => m.role === 'system');
+      if (sysIdx >= 0) {
+        chatMessages[sysIdx] = { ...chatMessages[sysIdx], content: preamble + chatMessages[sysIdx].content };
+      } else {
+        chatMessages.unshift({ role: 'system', content: preamble });
+      }
+    }
+
     if (stream) {
       let headersSent = false;
       let sentRole = false;
       let fullText = '';
       let ctx!: StreamContext;
+      const textSanitizer = new PathSanitizeStream();
+      const toolParser = hasTools ? new ToolCallStreamParser() : null;
+      let accToolCalls: ParsedToolCall[] = [];
 
       // Extract thinking budget: OpenAI uses reasoning_effort or custom header
       const thinkingBudget = (body as any).thinking_budget || 128000;
-      for await (const chunk of streamChatCore(body.messages, modelKey, authKey, { thinkingBudget })) {
+      for await (const chunk of streamChatCore(chatMessages, modelKey, authKey, { thinkingBudget })) {
         if (!headersSent) {
           res.writeHead(200, {
             'Content-Type': 'text/event-stream',
@@ -229,19 +262,74 @@ export async function handleChatCompletion(
             choices: [{ index: 0, delta: { reasoning_content: chunk.thinking }, finish_reason: null }],
           });
         }
-        // Text → content
+        // Text → content (sanitized, tool-parsed)
         if (chunk.text) {
-          fullText += chunk.text;
+          const safeText = textSanitizer.feed(chunk.text);
+          if (safeText) {
+            if (toolParser) {
+              const parsed = toolParser.feed(safeText);
+              if (parsed.text) {
+                fullText += parsed.text;
+                sse(res, {
+                  id: chatId, object: 'chat.completion.chunk', created, model: ctx.modelInfo.name,
+                  choices: [{ index: 0, delta: { content: parsed.text }, finish_reason: null }],
+                });
+              }
+              accToolCalls.push(...parsed.toolCalls);
+            } else {
+              fullText += safeText;
+              sse(res, {
+                id: chatId, object: 'chat.completion.chunk', created, model: ctx.modelInfo.name,
+                choices: [{ index: 0, delta: { content: safeText }, finish_reason: null }],
+              });
+            }
+          }
+        }
+      }
+      // Flush sanitizer + tool parser
+      const flushed = textSanitizer.flush();
+      if (flushed) {
+        if (toolParser) {
+          const parsed = toolParser.feed(flushed);
+          if (parsed.text) {
+            fullText += parsed.text;
+            sse(res, {
+              id: chatId, object: 'chat.completion.chunk', created, model: ctx?.modelInfo?.name || body.model,
+              choices: [{ index: 0, delta: { content: parsed.text }, finish_reason: null }],
+            });
+          }
+          accToolCalls.push(...parsed.toolCalls);
+          // Final flush of tool parser
+          const finalParsed = toolParser.flush();
+          if (finalParsed.text) {
+            fullText += finalParsed.text;
+            sse(res, {
+              id: chatId, object: 'chat.completion.chunk', created, model: ctx?.modelInfo?.name || body.model,
+              choices: [{ index: 0, delta: { content: finalParsed.text }, finish_reason: null }],
+            });
+          }
+          accToolCalls.push(...finalParsed.toolCalls);
+        } else {
+          fullText += flushed;
           sse(res, {
-            id: chatId, object: 'chat.completion.chunk', created, model: ctx.modelInfo.name,
-            choices: [{ index: 0, delta: { content: chunk.text }, finish_reason: null }],
+            id: chatId, object: 'chat.completion.chunk', created, model: ctx?.modelInfo?.name || body.model,
+            choices: [{ index: 0, delta: { content: flushed }, finish_reason: null }],
           });
         }
       }
 
+      // Emit accumulated tool calls as separate SSE chunks
+      for (const tc of accToolCalls) {
+        sse(res, {
+          id: chatId, object: 'chat.completion.chunk', created, model: ctx?.modelInfo?.name || body.model,
+          choices: [{ index: 0, delta: { tool_calls: [tc] }, finish_reason: null }],
+        });
+      }
+
+      const finishReason = accToolCalls.length > 0 ? 'tool_calls' : 'stop';
       sse(res, {
         id: chatId, object: 'chat.completion.chunk', created, model: ctx?.modelInfo?.name || body.model,
-        choices: [{ index: 0, delta: {}, finish_reason: 'stop' }],
+        choices: [{ index: 0, delta: {}, finish_reason: finishReason }],
       });
       res.write('data: [DONE]\n\n');
       res.end();
@@ -252,12 +340,12 @@ export async function handleChatCompletion(
         recordRequest({ model: ctx.modelKey, channelId: ctx.channel.id, tokensUsed: ctx.promptTokens + completionTokens });
       }
     } else {
-      const result = await runChatCore(body.messages, modelKey, authKey);
+      const result = await runChatCore(chatMessages, modelKey, authKey);
       json(res, 200, {
         id: chatId, object: 'chat.completion', created, model: result.modelInfo.name,
         choices: [{
           index: 0,
-          message: { role: 'assistant', content: result.text },
+          message: { role: 'assistant', content: sanitizeText(result.text) },
           finish_reason: 'stop',
         }],
         usage: {

@@ -34,11 +34,17 @@ export enum PlannerMode {
   AUTO = 6,
 }
 
+export interface ImageAttachment {
+  mimeType: string;
+  base64: string;
+}
+
 export interface CascadeConfigOptions {
   plannerMode?: PlannerMode;
   communicationText?: string;
   includeCommunicationOverride?: boolean;
   thinkingBudget?: number;
+  images?: ImageAttachment[];
 }
 
 export interface ChatToolCallInfo {
@@ -63,12 +69,21 @@ export interface TrajectoryStep {
   status: number;
   stepKind: string | null;
   text: string;
+  responseText: string;
+  modifiedText: string;
   thinking: string;
   errorText: string;
   toolCalls: ChatToolCallInfo[];
   requestedInteraction: string | null;
   runCommand: TrajectoryRunCommandInfo | null;
   rawStep: Buffer;
+}
+
+export interface ServerUsage {
+  inputTokens: number;
+  outputTokens: number;
+  cacheReadTokens: number;
+  cacheWriteTokens: number;
 }
 
 function encodeTimestamp(): Buffer {
@@ -173,17 +188,61 @@ export function buildCascadeConfig(
   modelUid: string | null,
   options: CascadeConfigOptions = {},
 ): Buffer {
-  const plannerMode = options.plannerMode ?? PlannerMode.NO_TOOL;
+  // When images are present, force DEFAULT mode (1) — NO_TOOL disables the vision pipeline
+  const hasImages = !!options.images?.length;
+  const plannerMode = hasImages ? PlannerMode.DEFAULT : (options.plannerMode ?? PlannerMode.NO_TOOL);
   const communicationText = options.communicationText ?? 'You are an AI assistant accessed via API.';
-  const includeCommunicationOverride = options.includeCommunicationOverride ?? true;
 
   const convParts = [writeVarintField(4, plannerMode)];
-  if (includeCommunicationOverride) {
-    const communicationOverride = Buffer.concat([
-      writeVarintField(1, 1),
-      writeStringField(2, communicationText),
-    ]);
-    convParts.push(writeMessageField(13, communicationOverride));
+
+  // Helper: build SectionOverrideConfig { mode=1 (OVERRIDE), content=text }
+  const sectionOverride = (text: string) => Buffer.concat([
+    writeVarintField(1, 1),       // SECTION_OVERRIDE_MODE_OVERRIDE
+    writeStringField(2, text),
+  ]);
+
+  if (hasImages) {
+    // ── DEFAULT mode for images — constrain tool usage ──
+    // Override tool_calling_section (field 10): suppress built-in tools
+    convParts.push(writeMessageField(10, sectionOverride('No tools are available. Analyze the provided image(s) and respond conversationally.')));
+
+    // Override additional_instructions (field 12): reinforce no-tool behavior
+    convParts.push(writeMessageField(12, sectionOverride(
+      'You have no tools, no file access, and no command execution. ' +
+      'Focus on analyzing any provided images and answering the user directly. ' +
+      'Never pretend to create files or check directories.'
+    )));
+
+    // Override communication_section (field 13): strip IDE persona
+    convParts.push(writeMessageField(13, sectionOverride(
+      communicationText + '\n\n' +
+      'You are NOT running inside an IDE or code editor. ' +
+      'You CANNOT access, create, read, edit, or delete any files. ' +
+      'You CANNOT execute commands or interact with external services. ' +
+      'Answer all questions directly using your training knowledge.'
+    )));
+  } else {
+    // ── NO_TOOL mode — full conversational suppression ──
+    // Override tool_calling_section (field 10): suppress built-in tool list
+    convParts.push(writeMessageField(10, sectionOverride('No tools are available.')));
+
+    // Override additional_instructions (field 12): reinforce direct-answer mode
+    convParts.push(writeMessageField(12, sectionOverride(
+      'You have no tools, no file access, and no command execution. ' +
+      'Answer all questions directly using your knowledge. ' +
+      'Never pretend to create files or check directories.'
+    )));
+
+    // Override communication_section (field 13): strip IDE-assistant persona
+    convParts.push(writeMessageField(13, sectionOverride(
+      communicationText + '\n\n' +
+      'You are NOT running inside an IDE or code editor. ' +
+      'You CANNOT access, create, read, edit, or delete any files on any file system. ' +
+      'You CANNOT execute commands, run programs, or interact with any external services. ' +
+      'When users ask you to perform file operations or system actions, ' +
+      'clearly tell them that you are a text-based AI without those capabilities. ' +
+      'Answer all questions directly using your training knowledge.'
+    )));
   }
 
   const conversationalConfig = Buffer.concat(convParts);
@@ -223,12 +282,26 @@ export function buildSendCascadeMessageRequest(
   modelEnum: number, modelUid: string | null, sessionId: string,
   options: CascadeConfigOptions = {},
 ): Buffer {
-  return Buffer.concat([
+  const parts = [
     writeStringField(1, cascadeId),
     writeMessageField(2, buildTextItem(text)),
     writeMessageField(3, buildMetadata(apiKey, undefined, sessionId)),
     writeMessageField(5, buildCascadeConfig(modelEnum, modelUid, options)),
-  ]);
+  ];
+
+  // Field 6: repeated ImageData { base64_data=1, mime_type=2 }
+  if (options.images?.length) {
+    for (const img of options.images) {
+      const imgMsg = Buffer.concat([
+        writeStringField(1, img.base64),
+        writeStringField(2, img.mimeType || 'image/png'),
+      ]);
+      parts.push(writeMessageField(6, imgMsg));
+    }
+    log.info(`Attached ${options.images.length} image(s) to Cascade request`);
+  }
+
+  return Buffer.concat(parts);
 }
 
 export function buildGetTrajectoryStepsRequest(cascadeId: string, stepOffset = 0): Buffer {
@@ -310,6 +383,8 @@ export function parseTrajectorySteps(buf: Buffer): TrajectoryStep[] {
       status: statusField ? (statusField.value as number) : 0,
       stepKind,
       text: '',
+      responseText: '',
+      modifiedText: '',
       thinking: '',
       errorText: '',
       toolCalls: [],
@@ -347,6 +422,8 @@ export function parseTrajectorySteps(buf: Buffer): TrajectoryStep[] {
       const responseText = textField ? (textField.value as Buffer).toString('utf8') : '';
       const modifiedText = modifiedField ? (modifiedField.value as Buffer).toString('utf8') : '';
       let rawText = modifiedText || responseText;
+      entry.responseText = responseText;
+      entry.modifiedText = modifiedText;
 
       // Primary: thinking from protobuf field 3
       let thinking = '';
@@ -416,4 +493,60 @@ export function parseTrajectorySteps(buf: Buffer): TrajectoryStep[] {
     results.push(entry);
   }
   return results;
+}
+
+// ─── GetCascadeTrajectoryGeneratorMetadata ─────────────────
+// Returns real token usage from Cascade backend.
+
+export function buildGetGeneratorMetadataRequest(cascadeId: string, stepIndex = 0): Buffer {
+  return Buffer.concat([
+    writeStringField(1, cascadeId),
+    writeVarintField(2, stepIndex),
+  ]);
+}
+
+/**
+ * Parse GetCascadeTrajectoryGeneratorMetadata response.
+ * The response contains model_usage with real token counts:
+ *   input_tokens, output_tokens, cache_read_tokens, cache_write_tokens
+ */
+export function parseGeneratorMetadata(buf: Buffer): ServerUsage | null {
+  if (!buf || buf.length === 0) return null;
+  try {
+    const fields = parseFields(buf);
+    // The metadata is in a nested message structure.
+    // Try field 1 (generator metadata), then look for usage submessage.
+    const meta = getField(fields, 1, 2);
+    if (!meta) return null;
+    const mf = parseFields(meta.value as Buffer);
+
+    // Look for model_usage submessage — try common field numbers
+    for (const fieldNum of [5, 6, 7, 8, 10]) {
+      const usageField = getField(mf, fieldNum, 2);
+      if (!usageField) continue;
+      const uf = parseFields(usageField.value as Buffer);
+
+      const inputField = getField(uf, 1, 0);
+      const outputField = getField(uf, 2, 0);
+      const cacheReadField = getField(uf, 3, 0);
+      const cacheWriteField = getField(uf, 4, 0);
+
+      const inputTokens = inputField ? (inputField.value as number) : 0;
+      const outputTokens = outputField ? (outputField.value as number) : 0;
+
+      if (inputTokens || outputTokens) {
+        return {
+          inputTokens,
+          outputTokens,
+          cacheReadTokens: cacheReadField ? (cacheReadField.value as number) : 0,
+          cacheWriteTokens: cacheWriteField ? (cacheWriteField.value as number) : 0,
+        };
+      }
+    }
+
+    return null;
+  } catch (e: any) {
+    log.debug(`parseGeneratorMetadata error: ${e.message}`);
+    return null;
+  }
 }
