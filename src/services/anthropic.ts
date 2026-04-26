@@ -55,6 +55,8 @@ function buildAnthropicToolPreamble(tools: any[]): string {
     '4. After emitting the last <tool_call> block, STOP. Do not write any explanation after it. The caller executes the functions and returns results in the next turn.',
     '5. NEVER say "I don\'t have access to tools" or "I cannot perform that action" — the functions listed below ARE your available tools.',
     '6. When a function is relevant to the user\'s request, you SHOULD call it rather than answering from memory.',
+    '7. ONLY use function names from the list below. Do NOT use: read_file, view_file, create_file, edit_file, run_command, command, search_replace, file_search, code_search, update_plan, grep_search. These names DO NOT EXIST.',
+    '8. The "name" field in your <tool_call> MUST exactly match one of the function names listed below.',
     '',
     'Available functions:',
   ];
@@ -107,7 +109,8 @@ function convertMessages(body: any): any[] {
       } else {
         messages.unshift({ role: 'system', content: preamble });
       }
-      log.info(`Injected tool preamble for ${body.tools.length} Anthropic tools`);
+      const toolNames = body.tools.map((t: any) => t.name).filter(Boolean);
+      log.info(`Injected tool preamble for ${body.tools.length} Anthropic tools: [${toolNames.slice(0, 8).join(', ')}${toolNames.length > 8 ? ', ...' : ''}]`);
     }
   }
   if (Array.isArray(body.messages)) {
@@ -221,6 +224,74 @@ export async function handleAnthropicMessage(
       const hasTools = Array.isArray(body.tools) && body.tools.length > 0;
       const toolParser = hasTools ? new ToolCallStreamParser() : null;
       let emittedToolUse = false;
+
+      // Build valid tool name set + Cascade→Claude Code name mapping
+      const validToolNames = new Set<string>();
+      if (hasTools) {
+        for (const t of body.tools) if (t.name) validToolNames.add(t.name);
+      }
+      // Map Cascade IDE tool names to likely Claude Code equivalents
+      const CASCADE_TO_CLAUDE: Record<string, string[]> = {
+        read_file: ['Read', 'read_file', 'ReadFiles'],
+        view_file: ['Read', 'read_file', 'ReadFiles'],
+        create_file: ['Write', 'write_to_file', 'CreateFile'],
+        edit_file: ['Edit', 'MultiEdit', 'edit_file'],
+        run_command: ['Bash', 'execute_command', 'RunCommand'],
+        command: ['Bash', 'execute_command', 'RunCommand'],
+        search_replace: ['Edit', 'MultiEdit', 'SearchReplace'],
+        grep_search: ['Grep', 'grep_search', 'Search'],
+        file_search: ['Search', 'find_by_name', 'ListDir'],
+        code_search: ['Search', 'code_search', 'Grep'],
+        update_plan: ['TodoWrite', 'todo_write', 'UpdatePlan'],
+        list_dir: ['ListDir', 'list_dir', 'ListDirectory'],
+      };
+      // Remap Cascade argument names to Claude Code equivalents
+      function fixToolArgs(fixedName: string, originalName: string, input: any): any {
+        if (fixedName === originalName || typeof input !== 'object' || !input) return input;
+        const mapped = { ...input };
+        // read_file/view_file → Read: target_file → file_path
+        if (originalName === 'read_file' || originalName === 'view_file') {
+          if (mapped.target_file && !mapped.file_path) {
+            mapped.file_path = mapped.target_file;
+            delete mapped.target_file;
+          }
+          if (mapped.should_read_entire_file !== undefined) {
+            delete mapped.should_read_entire_file;
+          }
+        }
+        // run_command/command → Bash: command → command (same), working_directory → description
+        if (originalName === 'run_command' || originalName === 'command') {
+          if (mapped.working_directory) {
+            // Bash doesn't have working_directory — prepend cd
+            if (mapped.command && !mapped.command.startsWith('cd ')) {
+              mapped.command = `cd ${mapped.working_directory} && ${mapped.command}`;
+            }
+            delete mapped.working_directory;
+          }
+        }
+        return mapped;
+      }
+      function fixToolName(name: string): string {
+        if (validToolNames.has(name)) return name;
+        const candidates = CASCADE_TO_CLAUDE[name] || CASCADE_TO_CLAUDE[name.toLowerCase()];
+        if (candidates) {
+          for (const c of candidates) {
+            if (validToolNames.has(c)) {
+              log.warn(`Mapped Cascade tool "${name}" → "${c}"`);
+              return c;
+            }
+          }
+        }
+        // Try case-insensitive match
+        for (const v of validToolNames) {
+          if (v.toLowerCase() === name.toLowerCase()) {
+            log.warn(`Mapped tool "${name}" → "${v}" (case fix)`);
+            return v;
+          }
+        }
+        log.warn(`Unknown tool name "${name}" — not in client's ${validToolNames.size} tools`);
+        return name;
+      }
 
       // Block state tracking
       let blockIndex = 0;
@@ -365,9 +436,11 @@ export async function handleAnthropicMessage(
                 const toolId = 'toolu_' + randomUUID().replace(/-/g, '').slice(0, 16);
                 let input: any;
                 try { input = JSON.parse(tc.function.arguments || '{}'); } catch { input = { raw: tc.function.arguments }; }
-                emitToolUseBlock(toolId, tc.function.name, input);
+                const fixedName = fixToolName(tc.function.name);
+                const fixedInput = fixToolArgs(fixedName, tc.function.name, input);
+                emitToolUseBlock(toolId, fixedName, fixedInput);
                 emittedToolUse = true;
-                log.debug(`Parsed tool_call → tool_use: ${tc.function.name} (${toolId})`);
+                log.info(`Parsed tool_call → tool_use: ${tc.function.name}${fixedName !== tc.function.name ? ' → ' + fixedName : ''} (${toolId})`);
               }
             } else if (safeText) {
               fullText += safeText;
@@ -401,9 +474,11 @@ export async function handleAnthropicMessage(
           const toolId = 'toolu_' + randomUUID().replace(/-/g, '').slice(0, 16);
           let input: any;
           try { input = JSON.parse(tc.function.arguments || '{}'); } catch { input = { raw: tc.function.arguments }; }
-          emitToolUseBlock(toolId, tc.function.name, input);
+          const fixedName = fixToolName(tc.function.name);
+          const fixedInput = fixToolArgs(fixedName, tc.function.name, input);
+          emitToolUseBlock(toolId, fixedName, fixedInput);
           emittedToolUse = true;
-          log.debug(`Parsed tool_call → tool_use (flush): ${tc.function.name}`);
+          log.info(`Parsed tool_call → tool_use (flush): ${tc.function.name}${fixedName !== tc.function.name ? ' → ' + fixedName : ''}`);
         }
       } else if (toolParser) {
         const finalParsed = toolParser.flush();
@@ -412,7 +487,9 @@ export async function handleAnthropicMessage(
           const toolId = 'toolu_' + randomUUID().replace(/-/g, '').slice(0, 16);
           let input: any;
           try { input = JSON.parse(tc.function.arguments || '{}'); } catch { input = { raw: tc.function.arguments }; }
-          emitToolUseBlock(toolId, tc.function.name, input);
+          const fixedName2 = fixToolName(tc.function.name);
+          const fixedInput2 = fixToolArgs(fixedName2, tc.function.name, input);
+          emitToolUseBlock(toolId, fixedName2, fixedInput2);
           emittedToolUse = true;
         }
       }
