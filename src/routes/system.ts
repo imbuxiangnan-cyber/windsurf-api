@@ -252,6 +252,23 @@ export async function handleSystemRoutes(
     return true;
   }
 
+  // GET/PUT /api/models/ratelimit
+  if (path === '/api/models/ratelimit' && method === 'GET') {
+    const { getRateLimitConfig } = await import('../services/routing.js');
+    json(res, 200, { rateLimit: getRateLimitConfig() });
+    return true;
+  }
+
+  if (path === '/api/models/ratelimit' && method === 'PUT') {
+    if (!checkDashboardAuth(req)) { json(res, 401, { error: 'Unauthorized' }); return true; }
+    const body = (req as any).parsedBody;
+    if (!body?.rateLimit) { json(res, 400, { error: 'Provide rateLimit object' }); return true; }
+    const { setRateLimitConfig, getRateLimitConfig } = await import('../services/routing.js');
+    setRateLimitConfig(body.rateLimit);
+    json(res, 200, { rateLimit: getRateLimitConfig() });
+    return true;
+  }
+
   // GET /api/models/available
   if (path === '/api/models/available' && method === 'GET') {
     const { listModels } = await import('../models.js');

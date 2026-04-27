@@ -13,7 +13,7 @@ import { validateToken, isModelAllowedForToken, consumeQuota } from './token.js'
 import { recordRequest } from './stats.js';
 import { WindsurfClient } from '../core/client.js';
 import { getLsPort, getCsrfToken } from '../core/langserver.js';
-import { applyMapping, waitForConcurrency, releaseConcurrency } from './routing.js';
+import { applyMapping, waitForConcurrency, releaseConcurrency, checkModelRateLimit } from './routing.js';
 import { PathSanitizeStream, sanitizeText } from './sanitize.js';
 import { buildToolPreamble, convertToolMessages, ToolCallStreamParser, ParsedToolCall } from './tool-emulation.js';
 
@@ -23,9 +23,19 @@ export class ChatError extends Error {
   }
 }
 
+function estimatePromptTokens(messages: any[]): number {
+  return Math.ceil(messages.reduce((s: number, m: any) => {
+    if (typeof m.content === 'string') return s + m.content.length;
+    if (Array.isArray(m.content)) {
+      return s + m.content.reduce((a: number, b: any) =>
+        a + (b?.type === 'text' ? (b.text?.length || 0) : 256), 0);
+    }
+    return s;
+  }, 0) / 4);
+}
+
 function computeUsage(messages: any[], text: string) {
-  const promptTokens = Math.ceil(messages.reduce((s: number, m: any) =>
-    s + (typeof m.content === 'string' ? m.content.length : 0), 0) / 4);
+  const promptTokens = estimatePromptTokens(messages);
   const completionTokens = Math.ceil(text.length / 4);
   return { promptTokens, completionTokens, tokensUsed: promptTokens + completionTokens };
 }
@@ -88,6 +98,10 @@ export async function* streamChatCore(
     throw new ChatError(`Model "${modelKey}" not allowed for this key`, 403);
   }
 
+  if (!checkModelRateLimit(mappedKey)) {
+    throw new ChatError(`Model "${modelKey}" rate limit exceeded, try later`, 429);
+  }
+
   const gotSlot = await waitForConcurrency(mappedKey, 30_000);
   if (!gotSlot) {
     throw new ChatError(`Model "${modelKey}" concurrency limit reached, try later`, 429);
@@ -99,8 +113,7 @@ export async function* streamChatCore(
     throw new ChatError('All channels busy or in error state', 429);
   }
 
-  const promptTokens = Math.ceil(messages.reduce((s: number, m: any) =>
-    s + (typeof m.content === 'string' ? m.content.length : 0), 0) / 4);
+  const promptTokens = estimatePromptTokens(messages);
   const ctx: StreamContext = { modelInfo, modelKey: mappedKey, channel: ch, authKey, promptTokens };
 
   try {

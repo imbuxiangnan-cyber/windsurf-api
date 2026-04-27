@@ -10,9 +10,10 @@ import { config, log } from '../config.js';
 interface RoutingConfig {
   mapping: Record<string, string>;
   concurrency: Record<string, number>;
+  rateLimit: Record<string, number>; // per-model RPM limits, 'default' key for fallback
 }
 
-const DEFAULT: RoutingConfig = { mapping: {}, concurrency: {} };
+const DEFAULT: RoutingConfig = { mapping: {}, concurrency: {}, rateLimit: {} };
 
 function configPath(): string {
   return join(config.dataDir, 'config.json');
@@ -158,4 +159,56 @@ export async function waitForConcurrency(model: string, timeoutMs: number = 3000
     await new Promise(r => setTimeout(r, 200));
   }
   return true;
+}
+
+// ─── Per-model rate limiting ─────────────────────────────
+
+const MODEL_RPM_WINDOW_MS = 60 * 1000;
+const modelRpmHistory: Map<string, number[]> = new Map();
+
+export function getRateLimitConfig(): Record<string, number> {
+  return loadConfig().rateLimit;
+}
+
+export function setRateLimitConfig(rateLimit: Record<string, number>): void {
+  const cfg = loadConfig();
+  cfg.rateLimit = rateLimit;
+  saveConfig(cfg);
+  log.info(`Rate limit config updated: ${Object.keys(rateLimit).length} rules`);
+}
+
+function getModelRpmLimit(model: string): number {
+  const cfg = getRateLimitConfig();
+  return cfg[model] || cfg['default'] || 0; // 0 = unlimited
+}
+
+function pruneModelRpm(model: string, now: number): number {
+  const history = modelRpmHistory.get(model) || [];
+  const cutoff = now - MODEL_RPM_WINDOW_MS;
+  while (history.length && history[0] < cutoff) history.shift();
+  modelRpmHistory.set(model, history);
+  return history.length;
+}
+
+/**
+ * Check and record a request against per-model RPM limit.
+ * Returns true if allowed, false if rate limited.
+ */
+export function checkModelRateLimit(model: string): boolean {
+  const limit = getModelRpmLimit(model);
+  if (limit <= 0) return true; // unlimited
+  const now = Date.now();
+  const current = pruneModelRpm(model, now);
+  if (current >= limit) {
+    log.warn(`Model ${model} RPM limit reached (${current}/${limit})`);
+    return false;
+  }
+  const history = modelRpmHistory.get(model) || [];
+  history.push(now);
+  modelRpmHistory.set(model, history);
+  return true;
+}
+
+export function getModelRpm(model: string): number {
+  return pruneModelRpm(model, Date.now());
 }
