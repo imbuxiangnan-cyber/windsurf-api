@@ -57,8 +57,9 @@ function buildAnthropicToolPreamble(tools: any[]): string {
     '6. When a function is relevant to the user\'s request, you SHOULD call it rather than answering from memory.',
     '7. ONLY use function names from the list below. Do NOT use: read_file, view_file, create_file, edit_file, run_command, command, search_replace, file_search, code_search, update_plan, grep_search, list_directory, ViewFile, RunCommand. These names DO NOT EXIST.',
     '8. The "name" field in your <tool_call> MUST exactly match one of the function names listed below.',
-    '9. The Bash tool runs in a Linux/Unix shell (not Windows CMD). Use Unix commands: cat (not type), ls (not dir), cp/mv/rm (not copy/move/del). For Windows paths, use forward slashes: /c/Users/... or /mnt/c/Users/...',
+    '9. The Bash tool runs on the user\'s system. Detect the OS from context. On Windows use PowerShell commands (Get-Content, Get-ChildItem, etc.). On Linux/macOS use standard Unix commands.',
     '10. Do NOT repeatedly call the same tool with the same arguments. If a tool result was already returned, use it directly.',
+    '11. For the Bash tool, NEVER set run_in_background to true unless the user explicitly asks for a background process. Always run commands in foreground to get output directly.',
     '',
     'Available functions:',
   ];
@@ -66,9 +67,9 @@ function buildAnthropicToolPreamble(tools: any[]): string {
   // For Claude Code with 30+ tools, use ultra-compact format to save context space.
   // Well-known tools: just name. Custom/unusual tools: name + short description.
   const WELL_KNOWN = new Set([
-    'Read', 'Edit', 'MultiEdit', 'Write', 'Bash', 'Grep', 'Glob', 'Search',
-    'ListDir', 'Agent', 'TodoRead', 'TodoWrite', 'WebSearch', 'WebFetch',
-    'NotebookRead', 'NotebookEdit',
+    'Read', 'Edit', 'Write', 'Bash', 'Grep', 'Glob', 'Agent',
+    'TodoWrite', 'WebSearch', 'WebFetch', 'NotebookEdit', 'Skill',
+    'AskUserQuestion', 'TaskOutput', 'TaskStop',
   ]);
   const useCompact = tools.length > 15;
 
@@ -138,7 +139,15 @@ function convertMessages(body: any): any[] {
         messages.unshift({ role: 'system', content: preamble });
       }
       const toolNames = body.tools.map((t: any) => t.name).filter(Boolean);
-      log.info(`Injected tool preamble for ${body.tools.length} Anthropic tools: [${toolNames.slice(0, 8).join(', ')}${toolNames.length > 8 ? ', ...' : ''}]`);
+      log.info(`Injected tool preamble for ${body.tools.length} Anthropic tools: [${toolNames.join(', ')}]`);
+      // Dump key tool schemas for debugging
+      for (const t of body.tools) {
+        if (['Bash', 'Read', 'Edit', 'Write'].includes(t.name)) {
+          const params = t.input_schema?.properties ? Object.keys(t.input_schema.properties).join(', ') : 'none';
+          const required = t.input_schema?.required?.join(', ') || 'none';
+          log.info(`  Tool "${t.name}" params: [${params}] required: [${required}]`);
+        }
+      }
     }
   }
   if (Array.isArray(body.messages)) {
@@ -309,30 +318,50 @@ export async function handleAnthropicMessage(
       };
       // Remap Cascade argument names to Claude Code equivalents
       function fixToolArgs(fixedName: string, originalName: string, input: any): any {
-        if (fixedName === originalName || typeof input !== 'object' || !input) return input;
+        if (typeof input !== 'object' || !input) return input;
         const mapped = { ...input };
-        // read_file/view_file/ViewFile/ReadFile → Read: target_file → file_path
-        const readLike = ['read_file', 'view_file', 'ViewFile', 'ReadFile', 'read_file_content', 'view_code_item', 'cat'];
-        if (readLike.includes(originalName)) {
+
+        // Always fix target_file → file_path for Read/Edit/Write
+        if (['Read', 'Edit', 'Write'].includes(fixedName) || ['read_file', 'view_file', 'ViewFile', 'ReadFile', 'read_file_content', 'view_code_item', 'cat'].includes(originalName)) {
           if (mapped.target_file && !mapped.file_path) {
             mapped.file_path = mapped.target_file;
             delete mapped.target_file;
+          }
+          if (mapped.path && !mapped.file_path) {
+            mapped.file_path = mapped.path;
+            delete mapped.path;
           }
           if (mapped.should_read_entire_file !== undefined) {
             delete mapped.should_read_entire_file;
           }
         }
-        // run_command/command/shell/RunCommand/exec → Bash: working_directory → cd prefix
-        const bashLike = ['run_command', 'command', 'shell', 'RunCommand', 'execute_command', 'exec', 'terminal'];
-        if (bashLike.includes(originalName)) {
+
+        // Write: code_content/text/code → content
+        if (fixedName === 'Write' || ['create_file', 'write_file', 'WriteFile'].includes(originalName)) {
+          if (!mapped.content) {
+            const contentKey = ['code_content', 'text', 'code', 'file_content', 'body'].find(k => mapped[k]);
+            if (contentKey) {
+              mapped.content = mapped[contentKey];
+              delete mapped[contentKey];
+            }
+          }
+        }
+
+        // Bash: working_directory → cd prefix, force run_in_background false
+        if (fixedName === 'Bash' || ['run_command', 'command', 'shell', 'RunCommand', 'execute_command', 'exec', 'terminal'].includes(originalName)) {
           if (mapped.working_directory) {
-            // Bash doesn't have working_directory — prepend cd
             if (mapped.command && !mapped.command.startsWith('cd ')) {
               mapped.command = `cd ${mapped.working_directory} && ${mapped.command}`;
             }
             delete mapped.working_directory;
           }
+          // Force foreground unless explicitly background
+          if (mapped.run_in_background === true) {
+            log.warn('Stripping run_in_background=true from Bash tool call');
+            delete mapped.run_in_background;
+          }
         }
+
         return mapped;
       }
       function fixToolName(name: string): string {
@@ -419,12 +448,18 @@ export async function handleAnthropicMessage(
       }
 
       function emitToolUseBlock(id: string, name: string, input: any) {
+        // Always run fixToolArgs on emitted tool_use blocks
+        const fixedInput = fixToolArgs(name, name, input);
         closeCurrentBlock();
         sse(res, { type: 'content_block_start', index: blockIndex, content_block: { type: 'tool_use', id, name, input: {} } });
-        const inputJson = typeof input === 'string' ? input : JSON.stringify(input);
+        const inputJson = typeof fixedInput === 'string' ? fixedInput : JSON.stringify(fixedInput);
         sse(res, { type: 'content_block_delta', index: blockIndex, delta: { type: 'input_json_delta', partial_json: inputJson } });
         sse(res, { type: 'content_block_stop', index: blockIndex });
         blockIndex++;
+        // Log tool_use args for debugging
+        const argKeys = typeof fixedInput === 'object' && fixedInput ? Object.keys(fixedInput) : [];
+        const contentLen = fixedInput?.content?.length || fixedInput?.command?.length || 0;
+        log.info(`  tool_use ${name}(${id}): keys=[${argKeys.join(',')}]${contentLen ? ` contentLen=${contentLen}` : ''}`);
       }
 
       // Heartbeat: send ping events to keep downstream alive
