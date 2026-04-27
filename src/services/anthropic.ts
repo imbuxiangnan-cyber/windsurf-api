@@ -347,6 +347,22 @@ export async function handleAnthropicMessage(
           }
         }
 
+        // TodoWrite: Cascade sends {plan_id, title, steps} but Claude Code wants {todos}
+        if (fixedName === 'TodoWrite' || ['update_plan', 'UpdatePlan', 'todowrite'].includes(originalName)) {
+          if (!mapped.todos && mapped.steps && Array.isArray(mapped.steps)) {
+            mapped.todos = mapped.steps.map((s: any) => ({
+              id: String(s.id || ''),
+              content: s.description || s.content || s.title || '',
+              status: s.status === 'done' ? 'completed' : s.status === 'in_progress' ? 'in_progress' : 'pending',
+              priority: s.priority || 'medium',
+            }));
+            delete mapped.steps;
+            delete mapped.plan_id;
+            delete mapped.title;
+            log.info(`Remapped TodoWrite: steps[${mapped.todos.length}] → todos`);
+          }
+        }
+
         // Bash: working_directory → cd prefix, force run_in_background false
         if (fixedName === 'Bash' || ['run_command', 'command', 'shell', 'RunCommand', 'execute_command', 'exec', 'terminal'].includes(originalName)) {
           if (mapped.working_directory) {
@@ -559,7 +575,11 @@ export async function handleAnthropicMessage(
           // Text deltas → text block (sanitized, auto-closes thinking block first)
           // When tools are present, parse <tool_call> blocks from text
           if (chunk.text) {
-            const safeText = textSanitizer.feed(chunk.text);
+            // Strip Cascade's <tool_use> tags that leak into text output
+            let safeText = textSanitizer.feed(chunk.text);
+            if (safeText) {
+              safeText = safeText.replace(/<\/?tool_use>/g, '').replace(/<tool_use\s*\/>/g, '');
+            }
             if (safeText && toolParser) {
               const parsed = toolParser.feed(safeText);
               if (parsed.text) {
