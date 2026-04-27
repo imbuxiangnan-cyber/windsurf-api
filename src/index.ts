@@ -162,28 +162,11 @@ async function cmdStart(flags: Record<string, string>) {
     console.log('  └──────────────────────────────────────────────┘\n');
   }
 
-  // Periodic token refresh (every 30 minutes) for desktop-extracted tokens
-  const TOKEN_REFRESH_MS = 30 * 60 * 1000;
-  const refreshTimer = setInterval(() => {
-    try {
-      const chs = listChannels();
-      if (chs.length === 1 && chs[0].email?.startsWith('desktop-')) {
-        const freshToken = extractDesktopToken();
-        if (freshToken) {
-          removeChannel(chs[0].id);
-          addChannel(`desktop-${Date.now().toString(36)}`, freshToken, 'pro');
-          log.info('Auto-refreshed token from Windsurf desktop app');
-        }
-      }
-    } catch { /* ignore refresh errors */ }
-  }, TOKEN_REFRESH_MS);
-
   let shuttingDown = false;
   const shutdown = (signal: string) => {
     if (shuttingDown) return;
     shuttingDown = true;
     log.info(`${signal} received, shutting down...`);
-    clearInterval(refreshTimer);
     destroyPool();
     server.close(() => {
       stopLanguageServer();

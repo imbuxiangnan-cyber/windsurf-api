@@ -9,7 +9,7 @@
 | 🤖 双协议兼容 | 同时支持 OpenAI Chat Completions API 和 Anthropic Messages API |
 | 💻 Claude Code 集成 | 一键生成 Claude Code 启动命令 (`--claude-code`) |
 | 📊 使用量监控 | Web 仪表盘实时查看 API 使用情况 |
-| 🔄 自动认证 | Token 过期自动刷新（每 30 分钟），无需手动干预 |
+| 🔄 自动认证 | 启动时自动从 Windsurf 桌面端提取 Token，无需手动干预 |
 | ⚡ 速率限制 | 内置 RPM 频率控制（60 RPM/账号），避免触发上游限制 |
 | 🌐 代理支持 | 支持 HTTP/HTTPS 代理，配置持久化 |
 | 🐳 Docker 支持 | 提供完整的 Docker 部署方案 |
