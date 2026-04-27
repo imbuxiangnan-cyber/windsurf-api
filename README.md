@@ -67,7 +67,7 @@ npx windsurf-api start --ls-path /path/to/language_server
 
 ```bash
 # 启动服务
-windsurf-api start [--port 4000] [--ls-path /path/to/ls]
+windsurf-api start [--port 4000] [--ls-path /path/to/ls] [--claude-code]
 
 # 添加账号
 windsurf-api add-account --token <devin_session_token>
@@ -78,6 +78,17 @@ windsurf-api list-accounts
 
 # 删除账号
 windsurf-api remove-account <id>
+
+# 代理配置
+windsurf-api proxy                  # 查看
+windsurf-api proxy --set            # 交互式设置
+windsurf-api proxy --http-proxy URL # 命令行设置
+windsurf-api proxy --enable         # 启用
+windsurf-api proxy --disable        # 禁用
+windsurf-api proxy --clear          # 清除
+
+# 调试信息
+windsurf-api debug
 
 # 帮助
 windsurf-api help
@@ -163,6 +174,44 @@ claude
 - 使用统计
 
 设置密码：`DASHBOARD_PASSWORD=your_password`
+
+## 🌐 代理配置
+
+支持持久化的 HTTP/HTTPS 代理设置，配置保存在 `%APPDATA%\windsurf-api\proxy.json`（Windows）或 `~/.config/windsurf-api/proxy.json`（Linux/macOS）。
+
+### 设置代理
+
+```bash
+# 交互式设置（推荐）
+npx windsurf-api proxy --set
+
+# 命令行直接设置
+npx windsurf-api proxy --http-proxy http://127.0.0.1:7890
+
+# 指定 HTTPS 代理和排除列表
+npx windsurf-api proxy --http-proxy http://127.0.0.1:7890 --https-proxy http://127.0.0.1:7890 --no-proxy localhost,127.0.0.1
+```
+
+### 管理代理
+
+```bash
+npx windsurf-api proxy              # 查看当前配置
+npx windsurf-api proxy --enable     # 启用代理
+npx windsurf-api proxy --disable    # 禁用代理（保留设置）
+npx windsurf-api proxy --clear      # 清除所有代理配置
+```
+
+### 启动时生效
+
+```bash
+# 默认：自动读取持久化代理配置
+npx windsurf-api start --claude-code
+
+# 使用系统环境变量中的代理（忽略持久化配置）
+npx windsurf-api start --claude-code --proxy-env
+```
+
+启动时如果代理已启用，日志会显示 `Proxy: http://127.0.0.1:7890`。
 
 ## ⚙️ 环境变量
 
