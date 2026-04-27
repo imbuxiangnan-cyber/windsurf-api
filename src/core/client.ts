@@ -257,7 +257,45 @@ export class WindsurfClient {
         const step = steps[i];
         const absIdx = stepOffset + i;
 
-        // Tool calls (dedupe by id)
+        // Thinking deltas — growth resets stall timer
+        const liveThink = step.thinking || '';
+        if (liveThink) {
+          const prevThink = thinkingByStep.get(absIdx) || 0;
+          if (liveThink.length > prevThink) {
+            const delta = liveThink.slice(prevThink);
+            thinkingByStep.set(absIdx, liveThink.length);
+            totalThinking += delta.length;
+            lastGrowthAt = Date.now();
+            yield {
+              text: '', thinking: delta, stepIndex: absIdx,
+              stepKind: step.stepKind, requestedInteraction: step.requestedInteraction,
+              cascadeId, trajectoryId: this.trajectoryId || undefined,
+            };
+          }
+        }
+
+        // Text deltas — yield BEFORE tool calls to avoid splitting text mid-word.
+        // Prefer responseText (append-only) over modifiedText during streaming.
+        // modifiedText is an LS post-pass rewrite that can change mid-stream, causing the
+        // cursor-based slice to skip rewritten bytes. responseText stays monotonic.
+        const liveText = step.responseText || step.text || '';
+        if (liveText) {
+          const prev = yieldedByStep.get(absIdx) || 0;
+          if (liveText.length > prev) {
+            const delta = liveText.slice(prev);
+            yieldedByStep.set(absIdx, liveText.length);
+            totalYielded += delta.length;
+            lastGrowthAt = Date.now();
+            sawText = true;
+            yield {
+              text: delta, thinking: '', stepIndex: absIdx,
+              stepKind: step.stepKind, requestedInteraction: step.requestedInteraction,
+              cascadeId, trajectoryId: this.trajectoryId || undefined,
+            };
+          }
+        }
+
+        // Tool calls (dedupe by id) — yielded after text to prevent mid-word splits
         if (step.toolCalls.length > 0) {
           for (const tc of step.toolCalls) {
             const key = tc.id || `${tc.name}:${tc.argumentsJson}`;
@@ -284,42 +322,6 @@ export class WindsurfClient {
             text: '', thinking: '', toolCalls: step.toolCalls,
             stepKind: step.stepKind, rawStep: step.rawStep, stepIndex: absIdx,
             runCommand: step.runCommand, requestedInteraction: step.requestedInteraction,
-            cascadeId, trajectoryId: this.trajectoryId || undefined,
-          };
-        }
-
-        // Thinking deltas — growth resets stall timer
-        const liveThink = step.thinking || '';
-        if (liveThink) {
-          const prevThink = thinkingByStep.get(absIdx) || 0;
-          if (liveThink.length > prevThink) {
-            const delta = liveThink.slice(prevThink);
-            thinkingByStep.set(absIdx, liveThink.length);
-            totalThinking += delta.length;
-            lastGrowthAt = Date.now();
-            yield {
-              text: '', thinking: delta, stepIndex: absIdx,
-              stepKind: step.stepKind, requestedInteraction: step.requestedInteraction,
-              cascadeId, trajectoryId: this.trajectoryId || undefined,
-            };
-          }
-        }
-
-        // Text deltas — prefer responseText (append-only) over modifiedText during streaming.
-        // modifiedText is an LS post-pass rewrite that can change mid-stream, causing the
-        // cursor-based slice to skip rewritten bytes. responseText stays monotonic.
-        const liveText = step.responseText || step.text || '';
-        if (!liveText) continue;
-        const prev = yieldedByStep.get(absIdx) || 0;
-        if (liveText.length > prev) {
-          const delta = liveText.slice(prev);
-          yieldedByStep.set(absIdx, liveText.length);
-          totalYielded += delta.length;
-          lastGrowthAt = Date.now();
-          sawText = true;
-          yield {
-            text: delta, thinking: '', stepIndex: absIdx,
-            stepKind: step.stepKind, requestedInteraction: step.requestedInteraction,
             cascadeId, trajectoryId: this.trajectoryId || undefined,
           };
         }

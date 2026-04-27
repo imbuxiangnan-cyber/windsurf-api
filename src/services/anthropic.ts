@@ -397,6 +397,20 @@ export async function handleAnthropicMessage(
             }
             delete mapped.working_directory;
           }
+          // Sanitize Windows cmd.exe syntax → bash
+          if (mapped.command && typeof mapped.command === 'string') {
+            let cmd = mapped.command;
+            // "cd /d X:\path &" → "cd X:/path &&" (strip /d flag, Windows drive change)
+            cmd = cmd.replace(/\bcd\s+\/d\s+/gi, 'cd ');
+            // Convert backslash paths to forward slashes
+            cmd = cmd.replace(/([A-Za-z]):\\([^\s&|"']+)/g, (_m: string, drive: string, rest: string) => `${drive}:/${rest.replace(/\\/g, '/')}`);
+            // Single & (cmd.exe) → && (bash), but not &&, |&, >&, 2>&1
+            cmd = cmd.replace(/(?<![&|>2])\s*&\s*(?!&)/g, ' && ');
+            if (cmd !== mapped.command) {
+              log.info(`Bash cmd sanitized: ${mapped.command.slice(0, 80)} → ${cmd.slice(0, 80)}`);
+              mapped.command = cmd;
+            }
+          }
           // Force foreground unless explicitly background
           if (mapped.run_in_background === true) {
             log.warn('Stripping run_in_background=true from Bash tool call');
