@@ -177,7 +177,9 @@ const TC_CLOSE = '</tool_call>';
 const TR_PREFIX = '<tool_result';
 const TR_CLOSE = '</tool_result>';
 const BARE_JSON = '{"name"';
-const PREFIXES = [TC_OPEN, TR_PREFIX, BARE_JSON];
+// Matches 'tool:ToolName' (start of line or preceded by newline)
+const TOOL_COLON_RE = /(?:^|\n)(tool:\s*([A-Za-z_][A-Za-z0-9_]*)\s*\n)/;
+const PREFIXES = [TC_OPEN, TR_PREFIX, BARE_JSON, 'tool:'];
 const MAX_BLOCK_SIZE = 65_536;
 
 /**
@@ -187,6 +189,7 @@ const MAX_BLOCK_SIZE = 65_536;
  *   1. <tool_call>{"name":"...","arguments":{...}}</tool_call>  (primary)
  *   2. {"name":"...","arguments":{...}}                          (bare JSON)
  *   3. <tool_result ...>...</tool_result>                        (stripped/discarded)
+ *   4. tool:Name\n{"arg":"val"}\n</tool:Name>                  (colon format)
  *
  * Based on dwgx/WindsurfAPI's battle-tested ToolCallStreamParser.
  */
@@ -195,6 +198,8 @@ export class ToolCallStreamParser {
   private inToolCall = false;
   private inToolResult = false;
   private inBareCall = false;
+  private inColonCall = false;
+  private colonToolName = '';
   private callCounter = 0;
 
   feed(delta: string): { text: string; toolCalls: ParsedToolCall[] } {
@@ -218,6 +223,12 @@ export class ToolCallStreamParser {
     if (this.inBareCall) {
       this.inBareCall = false;
       const tc = this._parseBareJson(remaining);
+      if (tc) return { text: '', toolCalls: [tc] };
+      return { text: remaining, toolCalls: [] };
+    }
+    if (this.inColonCall) {
+      this.inColonCall = false;
+      const tc = this._parseColonBody(this.colonToolName, remaining);
       if (tc) return { text: '', toolCalls: [tc] };
       return { text: remaining, toolCalls: [] };
     }
@@ -283,6 +294,30 @@ export class ToolCallStreamParser {
         continue;
       }
 
+      // ── Inside tool:Name ... </tool:Name> ──
+      if (this.inColonCall) {
+        if (this.buffer.length > MAX_BLOCK_SIZE) {
+          log.warn(`ToolParser: tool:${this.colonToolName} block exceeds 65KB, emitting as text`);
+          safeParts.push(this.buffer);
+          this.buffer = '';
+          this.inColonCall = false;
+          break;
+        }
+        const closeTag = `</tool:${this.colonToolName}>`;
+        const closeIdx = this.buffer.indexOf(closeTag);
+        if (closeIdx === -1) break;
+        const body = this.buffer.slice(0, closeIdx).trim();
+        this.buffer = this.buffer.slice(closeIdx + closeTag.length);
+        this.inColonCall = false;
+        const tc = this._parseColonBody(this.colonToolName, body);
+        if (tc) {
+          toolCalls.push(tc);
+        } else {
+          safeParts.push(body);
+        }
+        continue;
+      }
+
       // ── Inside bare JSON {"name":"...","arguments":{...}} ──
       if (this.inBareCall) {
         if (this.buffer.length > MAX_BLOCK_SIZE) {
@@ -310,12 +345,15 @@ export class ToolCallStreamParser {
       const tcIdx = this.buffer.indexOf(TC_OPEN);
       const trIdx = this.buffer.indexOf(TR_PREFIX);
       const bareIdx = this.buffer.indexOf(BARE_JSON);
+      // Check for tool:Name format
+      const colonMatch = TOOL_COLON_RE.exec(this.buffer);
 
       // Find earliest match
       const candidates: { idx: number; type: string }[] = [];
       if (tcIdx !== -1) candidates.push({ idx: tcIdx, type: 'tc' });
       if (trIdx !== -1) candidates.push({ idx: trIdx, type: 'tr' });
       if (bareIdx !== -1) candidates.push({ idx: bareIdx, type: 'bare' });
+      if (colonMatch) candidates.push({ idx: colonMatch.index + (colonMatch[0].startsWith('\n') ? 1 : 0), type: 'colon' });
       candidates.sort((a, b) => a.idx - b.idx);
 
       if (candidates.length === 0) {
@@ -347,6 +385,13 @@ export class ToolCallStreamParser {
       } else if (first.type === 'bare') {
         this.buffer = this.buffer.slice(first.idx);
         this.inBareCall = true;
+      } else if (first.type === 'colon' && colonMatch) {
+        const fullOpen = colonMatch[1]; // 'tool:Name\n'
+        const toolName = colonMatch[2]; // 'Name'
+        this.buffer = this.buffer.slice(first.idx + fullOpen.length);
+        this.inColonCall = true;
+        this.colonToolName = toolName;
+        log.debug(`ToolParser: entering tool:${toolName} colon format`);
       }
     }
 
@@ -366,6 +411,20 @@ export class ToolCallStreamParser {
       if (ch === '}') { depth--; if (depth === 0) return i; }
     }
     return -1;
+  }
+
+  /** Parse tool:Name body — the JSON is the arguments directly (not wrapped in {name, arguments}) */
+  private _parseColonBody(toolName: string, body: string): ParsedToolCall | null {
+    const parsed = safeParseJson(body);
+    if (!parsed || typeof parsed !== 'object') return null;
+    const argsJson = JSON.stringify(parsed);
+    this.callCounter++;
+    log.info(`ToolParser: matched tool:${toolName} colon format`);
+    return {
+      id: `call_${this.callCounter}_${Date.now().toString(36)}`,
+      type: 'function',
+      function: { name: toolName, arguments: argsJson },
+    };
   }
 
   /** Parse a bare JSON string into a tool call */
