@@ -336,13 +336,14 @@ export async function handleAnthropicMessage(
 
         // Always fix target_file → file_path for Read/Edit/Write
         if (['Read', 'Edit', 'Write'].includes(fixedName) || ['read_file', 'view_file', 'ViewFile', 'ReadFile', 'read_file_content', 'view_code_item', 'cat'].includes(originalName)) {
-          if (mapped.target_file && !mapped.file_path) {
-            mapped.file_path = mapped.target_file;
-            delete mapped.target_file;
-          }
-          if (mapped.path && !mapped.file_path) {
-            mapped.file_path = mapped.path;
-            delete mapped.path;
+          if (!mapped.file_path) {
+            const fpKey = ['target_file', 'path', 'filename', 'file', 'name', 'filepath'].find(k => mapped[k]);
+            if (fpKey) {
+              mapped.file_path = mapped[fpKey];
+              delete mapped[fpKey];
+            } else if (fixedName === 'Read') {
+              log.warn(`Read tool called with no file_path, keys=[${Object.keys(mapped).join(',')}]`);
+            }
           }
           if (mapped.should_read_entire_file !== undefined) {
             delete mapped.should_read_entire_file;
@@ -360,22 +361,41 @@ export async function handleAnthropicMessage(
           }
         }
 
-        // TodoWrite: Cascade sends {plan_id, title, steps/plan_steps} but Claude Code wants {todos}
-        if (fixedName === 'TodoWrite' || ['update_plan', 'UpdatePlan', 'todowrite'].includes(originalName)) {
-          const stepsArr = mapped.steps || mapped.plan_steps;
-          if (!mapped.todos && stepsArr && Array.isArray(stepsArr)) {
-            mapped.todos = stepsArr.map((s: any) => ({
-              id: String(s.id || ''),
-              content: s.description || s.content || s.title || '',
-              status: s.status === 'done' ? 'completed' : s.status === 'in_progress' ? 'in_progress' : 'pending',
-              priority: s.priority || 'medium',
-            }));
-            delete mapped.steps;
-            delete mapped.plan_steps;
-            delete mapped.plan_id;
-            delete mapped.title;
-            log.info(`Remapped TodoWrite: steps[${mapped.todos.length}] → todos`);
+        // TodoWrite: Cascade sends various formats, Claude Code wants {todos: [{id, content, status, priority}]}
+        if (fixedName === 'TodoWrite' || ['update_plan', 'UpdatePlan', 'todowrite', 'todo_write', 'update_todos'].includes(originalName)) {
+          if (!mapped.todos) {
+            // Try known array keys
+            const arrKey = ['steps', 'plan_steps', 'items', 'tasks', 'todo_list', 'todo_items'].find(k => Array.isArray(mapped[k]));
+            let stepsArr: any[] | undefined;
+            if (arrKey) {
+              stepsArr = mapped[arrKey];
+              delete mapped[arrKey];
+            } else {
+              // Last resort: find any array property
+              const anyArr = Object.entries(mapped).find(([, v]) => Array.isArray(v));
+              if (anyArr) {
+                stepsArr = anyArr[1] as any[];
+                delete mapped[anyArr[0]];
+                log.warn(`TodoWrite: using fallback array key "${anyArr[0]}" as todos`);
+              }
+            }
+            if (stepsArr && stepsArr.length > 0) {
+              mapped.todos = stepsArr.map((s: any, idx: number) => ({
+                id: String(s.id || idx + 1),
+                content: s.description || s.content || s.title || s.text || String(s),
+                status: s.status === 'done' || s.status === 'completed' ? 'completed' : s.status === 'in_progress' ? 'in_progress' : 'pending',
+                priority: s.priority || 'medium',
+              }));
+              log.info(`Remapped TodoWrite: ${arrKey || 'array'}[${mapped.todos.length}] → todos`);
+            } else {
+              // Nothing found — create empty todos to avoid validation error
+              mapped.todos = [];
+              log.warn(`TodoWrite: no steps/items found in input, keys=[${Object.keys(mapped).join(',')}]`);
+            }
           }
+          // Clean up extra keys that Claude Code doesn't need
+          delete mapped.plan_id;
+          delete mapped.title;
         }
 
         // Glob: fix pattern from various sources (ListDir, list_dir, or direct Glob with missing pattern)
