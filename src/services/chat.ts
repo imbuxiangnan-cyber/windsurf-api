@@ -213,6 +213,7 @@ export async function handleChatCompletion(
     }
 
     const stream = !!body.stream;
+    const includeUsage = !!(body as any).stream_options?.include_usage;
     const chatId = 'chatcmpl-' + randomUUID().replace(/-/g, '').slice(0, 20);
     const created = Math.floor(Date.now() / 1000);
 
@@ -332,17 +333,28 @@ export async function handleChatCompletion(
       }
 
       const finishReason = accToolCalls.length > 0 ? 'tool_calls' : 'stop';
-      sse(res, {
+      const completionTokens = Math.ceil(fullText.length / 4);
+      const promptTokens = ctx?.promptTokens || 0;
+      const finalChunk: any = {
         id: chatId, object: 'chat.completion.chunk', created, model: ctx?.modelInfo?.name || body.model,
         choices: [{ index: 0, delta: {}, finish_reason: finishReason }],
-      });
+      };
+      if (includeUsage) {
+        finalChunk.usage = {
+          prompt_tokens: ctx?.serverInputTokens || promptTokens,
+          completion_tokens: ctx?.serverOutputTokens || completionTokens,
+          total_tokens: (ctx?.serverInputTokens || promptTokens) + (ctx?.serverOutputTokens || completionTokens),
+          ...(ctx?.cacheReadTokens ? { cache_read_input_tokens: ctx.cacheReadTokens } : {}),
+          ...(ctx?.cacheWriteTokens ? { cache_creation_input_tokens: ctx.cacheWriteTokens } : {}),
+        };
+      }
+      sse(res, finalChunk);
       res.write('data: [DONE]\n\n');
       res.end();
 
       if (ctx) {
-        const completionTokens = Math.ceil(fullText.length / 4);
-        consumeQuota(ctx.authKey, ctx.promptTokens + completionTokens);
-        recordRequest({ model: ctx.modelKey, channelId: ctx.channel.id, tokensUsed: ctx.promptTokens + completionTokens });
+        consumeQuota(ctx.authKey, promptTokens + completionTokens);
+        recordRequest({ model: ctx.modelKey, channelId: ctx.channel.id, tokensUsed: promptTokens + completionTokens });
       }
     } else {
       const result = await runChatCore(chatMessages, modelKey, authKey);

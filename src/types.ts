@@ -43,6 +43,8 @@ export interface DailyStats {
   tokens: number;
   byModel: Record<string, number>;
   byChannel: Record<string, number>;
+  tokensByModel?: Record<string, number>;
+  byApiKey?: Record<string, { requests: number; tokens: number }>;
 }
 
 export interface Stats {

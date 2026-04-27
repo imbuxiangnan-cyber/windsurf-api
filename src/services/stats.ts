@@ -41,6 +41,7 @@ export function recordRequest(opts: {
   model: string;
   channelId: string;
   tokensUsed: number;
+  apiKey?: string;
 }): void {
   const daily = getOrCreateDaily(getTodayStr());
   stats.totalRequests++;
@@ -49,6 +50,16 @@ export function recordRequest(opts: {
   daily.tokens += opts.tokensUsed;
   daily.byModel[opts.model] = (daily.byModel[opts.model] || 0) + 1;
   daily.byChannel[opts.channelId] = (daily.byChannel[opts.channelId] || 0) + 1;
+  // Per-model token tracking
+  if (!daily.tokensByModel) daily.tokensByModel = {};
+  daily.tokensByModel[opts.model] = (daily.tokensByModel[opts.model] || 0) + opts.tokensUsed;
+  // Per-API-key tracking
+  if (opts.apiKey) {
+    if (!daily.byApiKey) daily.byApiKey = {};
+    if (!daily.byApiKey[opts.apiKey]) daily.byApiKey[opts.apiKey] = { requests: 0, tokens: 0 };
+    daily.byApiKey[opts.apiKey].requests++;
+    daily.byApiKey[opts.apiKey].tokens += opts.tokensUsed;
+  }
   stats.lastUpdated = Date.now();
   persist();
 }
