@@ -441,7 +441,8 @@ export class WindsurfClient {
   private formatConversation(messages: any[]): string {
     // Single user message — send as-is (most common, zero overhead)
     if (messages.length === 1 && messages[0].role === 'user') {
-      return String(messages[0].content);
+      return String(messages[0].content)
+        .replace(/<task-notification>[\s\S]*?<\/task-notification>\s*/g, '');
     }
 
     // Multi-turn: include conversation history so the model has context
@@ -450,7 +451,10 @@ export class WindsurfClient {
     parts.push('<conversation_history>');
     for (let i = 0; i < messages.length; i++) {
       const msg = messages[i];
-      const content = String(msg.content);
+      // Strip <task-notification> blocks — Claude Code internal, not for the model
+      let content = String(msg.content)
+        .replace(/<task-notification>[\s\S]*?<\/task-notification>\s*/g, '');
+      if (!content.trim() && msg.role === 'user') continue; // skip empty after strip
       const isLast = i === messages.length - 1;
 
       if (isLast && msg.role === 'user') {
