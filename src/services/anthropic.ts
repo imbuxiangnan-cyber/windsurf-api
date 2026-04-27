@@ -378,14 +378,21 @@ export async function handleAnthropicMessage(
           }
         }
 
-        // ListDir → Glob: dir_path → pattern
-        if (fixedName === 'Glob' && (originalName === 'ListDir' || originalName === 'list_dir' || originalName === 'list_directory')) {
-          if (mapped.dir_path && !mapped.pattern) {
-            // Convert dir_path to glob pattern: /path/to/dir → /path/to/dir/*
-            const dir = mapped.dir_path.replace(/\/$/, '');
-            mapped.pattern = `${dir}/*`;
-            delete mapped.dir_path;
-            log.info(`Remapped ListDir dir_path="${dir}" → Glob pattern="${mapped.pattern}"`);
+        // Glob: fix pattern from various sources (ListDir, list_dir, or direct Glob with missing pattern)
+        if (fixedName === 'Glob') {
+          // Map dir_path / directory / path → pattern if pattern is empty
+          if (!mapped.pattern) {
+            const dirKey = ['dir_path', 'directory', 'path'].find(k => mapped[k]);
+            if (dirKey) {
+              const dir = String(mapped[dirKey]).replace(/\/$/, '');
+              mapped.pattern = `${dir}/*`;
+              delete mapped[dirKey];
+              log.info(`Remapped ${originalName} ${dirKey}="${dir}" → Glob pattern="${mapped.pattern}"`);
+            } else {
+              // No pattern and no directory — default to current dir
+              mapped.pattern = '*';
+              log.warn(`Glob called with empty pattern, defaulting to "*"`);
+            }
           }
         }
 
