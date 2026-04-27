@@ -4,14 +4,26 @@
 
 ## ✨ 功能特点
 
-- **双协议兼容** — OpenAI (`/v1/chat/completions`) + Anthropic (`/v1/messages`) 原生端点
-- **100+ 模型** — Claude / GPT / Gemini / DeepSeek / Grok / Qwen / Kimi 等
-- **多账号池** — 按剩余容量均衡分配，自动故障转移
-- **CLI 管理** — 简单命令行管理账号，交互式登录
-- **Dashboard** — Web 管理面板，账号/密钥/统计一目了然
-- **API Key 管理** — 下游消费者密钥管理
-- **Docker 支持** — 一键部署
-- **零依赖** — 纯 Node.js 内置模块
+| 功能 | 说明 |
+|------|------|
+| 🤖 双协议兼容 | 同时支持 OpenAI Chat Completions API 和 Anthropic Messages API |
+| 💻 Claude Code 集成 | 一键生成 Claude Code 启动命令 (`--claude-code`) |
+| 📊 使用量监控 | Web 仪表盘实时查看 API 使用情况 |
+| 🔄 自动认证 | Token 过期自动刷新（每 30 分钟），无需手动干预 |
+| ⚡ 速率限制 | 内置 RPM 频率控制（60 RPM/账号），避免触发上游限制 |
+| 🌐 代理支持 | 支持 HTTP/HTTPS 代理，配置持久化 |
+| 🐳 Docker 支持 | 提供完整的 Docker 部署方案 |
+| 🔑 API Key 认证 | 可选的 API Key 鉴权，保护公开部署的服务 |
+| 👥 多账号管理 | 支持多账号池，额度耗尽/限流/封禁时自动切换下一个 |
+| 🔀 模型路由 | 灵活的模型名映射和每模型并发控制 |
+| 📱 可视化管理 | Web 仪表盘支持账号管理、模型管理、运行统计 |
+| 🛡️ 网络弹性 | 连接超时 + 流中断即时恢复 + 30s 心跳保活 + 动态停滞检测 |
+| ✂️ 上下文透传 | 全量透传上下文至上游，由客户端（如 Claude Code）自行管理压缩 |
+| 🔍 智能模型匹配 | 自动处理模型名格式差异（日期后缀、dash/dot 版本号、别名等） |
+| 🧠 Thinking 思维链 | 自动为支持的模型启用深度思考（extended thinking），提升代码质量 |
+| 🔧 工具仿真 | 将 OpenAI tools[] 转换为 Cascade 文本格式，兼容 Cursor / Aider / Continue.dev |
+| 🧹 路径消毒 | 自动清理 Windsurf 内部路径，防止泄露服务器环境信息 |
+| 🌍 零依赖 | 纯 Node.js 内置模块，无第三方依赖 |
 
 ## 🚀 快速开始
 
