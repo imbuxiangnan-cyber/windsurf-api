@@ -360,16 +360,18 @@ export async function handleAnthropicMessage(
           }
         }
 
-        // TodoWrite: Cascade sends {plan_id, title, steps} but Claude Code wants {todos}
+        // TodoWrite: Cascade sends {plan_id, title, steps/plan_steps} but Claude Code wants {todos}
         if (fixedName === 'TodoWrite' || ['update_plan', 'UpdatePlan', 'todowrite'].includes(originalName)) {
-          if (!mapped.todos && mapped.steps && Array.isArray(mapped.steps)) {
-            mapped.todos = mapped.steps.map((s: any) => ({
+          const stepsArr = mapped.steps || mapped.plan_steps;
+          if (!mapped.todos && stepsArr && Array.isArray(stepsArr)) {
+            mapped.todos = stepsArr.map((s: any) => ({
               id: String(s.id || ''),
               content: s.description || s.content || s.title || '',
               status: s.status === 'done' ? 'completed' : s.status === 'in_progress' ? 'in_progress' : 'pending',
               priority: s.priority || 'medium',
             }));
             delete mapped.steps;
+            delete mapped.plan_steps;
             delete mapped.plan_id;
             delete mapped.title;
             log.info(`Remapped TodoWrite: steps[${mapped.todos.length}] → todos`);
