@@ -238,8 +238,8 @@ export class WindsurfClient {
       // Tool-heavy payloads (hasDefaultMode) get 60s base instead of 30s
       const elapsed = Date.now() - startTime;
       const coldBase = hasDefaultMode ? 60_000 : 30_000;
-      const coldStallMs = Math.min(maxWait, coldBase + Math.floor(inputChars / 1500) * 5_000);
-      if (elapsed > coldStallMs && sawActive && !sawText && seenToolCallIds.size === 0) {
+      const coldStallMs = Math.min(maxWait - 10_000, coldBase + Math.floor(inputChars / 1500) * 5_000);
+      if (elapsed > coldStallMs && sawActive && !sawText && totalThinking === 0 && seenToolCallIds.size === 0) {
         log.warn(`Cascade cold stall: ${elapsed}ms active, no output (threshold=${coldStallMs}ms, inputChars=${inputChars})`);
         endReason = 'stall_cold';
         const err = new Error(`Cascade planner stalled — no output after ${Math.round(coldStallMs / 1000)}s`);
@@ -526,6 +526,6 @@ export class WindsurfClient {
     }, {});
     log.info(`streamChat: ${messages.length} msgs [${Object.entries(roleCounts).map(([r, c]) => `${r}=${c}`).join(', ')}], conversation=${text.length} chars, system=${mergedOpts.communicationText?.length || 0} chars, total=${inputChars} chars`);
     await this.sendMessage(cascadeId, text, modelEnum, modelUid, mergedOpts);
-    yield* this.streamCascade(cascadeId, 0, 180_000, inputChars, !!images.length || hasTools);
+    yield* this.streamCascade(cascadeId, 0, 300_000, inputChars, !!images.length || hasTools);
   }
 }
