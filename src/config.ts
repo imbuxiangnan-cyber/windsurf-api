@@ -74,9 +74,28 @@ function ts(): string {
   return new Date().toLocaleTimeString('en-US', { hour12: false });
 }
 
+// Circular log buffer for dashboard real-time logs
+const LOG_BUFFER_SIZE = 200;
+const logBuffer: { time: string; level: string; message: string }[] = [];
+
+function bufferLog(level: string, args: any[]): void {
+  const message = args.map(a => typeof a === 'string' ? a : JSON.stringify(a)).join(' ');
+  logBuffer.push({ time: ts(), level, message });
+  if (logBuffer.length > LOG_BUFFER_SIZE) logBuffer.shift();
+}
+
+export function getRecentLogs(since?: number): { time: string; level: string; message: string }[] {
+  if (since === undefined) return logBuffer.slice(-50);
+  return logBuffer.slice(since);
+}
+
+export function getLogBufferLength(): number {
+  return logBuffer.length;
+}
+
 export const log = {
-  debug: (...args: any[]) => { if (shouldLog('debug')) console.log(`[${ts()}] [DEBUG]`, ...args); },
-  info: (...args: any[]) => { if (shouldLog('info')) console.log(`[${ts()}] [INFO]`, ...args); },
-  warn: (...args: any[]) => { if (shouldLog('warn')) console.warn(`[${ts()}] [WARN]`, ...args); },
-  error: (...args: any[]) => { if (shouldLog('error')) console.error(`[${ts()}] [ERROR]`, ...args); },
+  debug: (...args: any[]) => { if (shouldLog('debug')) { console.log(`[${ts()}] [DEBUG]`, ...args); bufferLog('debug', args); } },
+  info: (...args: any[]) => { if (shouldLog('info')) { console.log(`[${ts()}] [INFO]`, ...args); bufferLog('info', args); } },
+  warn: (...args: any[]) => { if (shouldLog('warn')) { console.warn(`[${ts()}] [WARN]`, ...args); bufferLog('warn', args); } },
+  error: (...args: any[]) => { if (shouldLog('error')) { console.error(`[${ts()}] [ERROR]`, ...args); bufferLog('error', args); } },
 };

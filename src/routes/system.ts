@@ -6,7 +6,7 @@ import http from 'http';
 import { readFileSync, existsSync } from 'fs';
 import { resolve, dirname } from 'path';
 import { fileURLToPath } from 'url';
-import { config } from '../config.js';
+import { config, getRecentLogs, getLogBufferLength } from '../config.js';
 import { isLsReady } from '../core/langserver.js';
 import { listChannels, hasActiveChannels, addChannel, removeChannel, updateChannelStatus, getChannelCount } from '../services/channel.js';
 import { listTokens, createToken, removeToken } from '../services/token.js';
@@ -155,6 +155,34 @@ export async function handleSystemRoutes(
   if (path === '/dashboard/api/stats' && method === 'GET') {
     if (!checkDashboardAuth(req)) { json(res, 401, { error: 'Unauthorized' }); return true; }
     json(res, 200, getStats());
+    return true;
+  }
+
+  // Dashboard API — Real-time logs
+  if (path === '/dashboard/api/logs' && method === 'GET') {
+    if (!checkDashboardAuth(req)) { json(res, 401, { error: 'Unauthorized' }); return true; }
+    const url = new URL(req.url || '', `http://${req.headers.host}`);
+    const since = url.searchParams.get('since');
+    const logs = getRecentLogs(since ? parseInt(since, 10) : undefined);
+    json(res, 200, { logs, total: getLogBufferLength() });
+    return true;
+  }
+
+  // Dashboard API — Batch channel operations
+  if (path === '/dashboard/api/channels/batch' && method === 'POST') {
+    if (!checkDashboardAuth(req)) { json(res, 401, { error: 'Unauthorized' }); return true; }
+    const body = (req as any).parsedBody;
+    if (!body?.ids || !Array.isArray(body.ids) || !body.action) {
+      json(res, 400, { error: 'Provide ids[] and action (enable|disable|delete)' });
+      return true;
+    }
+    let count = 0;
+    for (const id of body.ids) {
+      if (body.action === 'enable') { if (updateChannelStatus(id, 'active')) count++; }
+      else if (body.action === 'disable') { if (updateChannelStatus(id, 'disabled')) count++; }
+      else if (body.action === 'delete') { if (removeChannel(id)) count++; }
+    }
+    json(res, 200, { success: true, affected: count });
     return true;
   }
 

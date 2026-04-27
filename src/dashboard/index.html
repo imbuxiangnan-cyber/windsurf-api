@@ -48,6 +48,23 @@
   .empty { text-align: center; color: #64748b; padding: 40px; }
   .api-info { background: #0f172a; border-radius: 8px; padding: 12px 16px; margin-bottom: 16px; font-family: 'Fira Code', monospace; font-size: 0.85rem; color: #94a3b8; }
   .api-info code { color: #38bdf8; }
+  .chart-row { display: grid; grid-template-columns: 1fr 1fr; gap: 16px; margin-bottom: 20px; }
+  @media (max-width: 768px) { .chart-row { grid-template-columns: 1fr; } }
+  .chart-box { background: #0f172a; border-radius: 10px; padding: 16px; }
+  .chart-box h3 { font-size: 0.95rem; color: #94a3b8; margin-bottom: 12px; }
+  .bar-chart { display: flex; align-items: flex-end; gap: 4px; height: 140px; }
+  .bar-col { display: flex; flex-direction: column; align-items: center; flex: 1; min-width: 0; height: 100%; justify-content: flex-end; }
+  .bar { width: 100%; border-radius: 4px 4px 0 0; min-height: 2px; transition: height 0.3s; position: relative; }
+  .bar:hover::after { content: attr(data-tip); position: absolute; bottom: calc(100% + 4px); left: 50%; transform: translateX(-50%); background: #334155; color: #e2e8f0; padding: 2px 8px; border-radius: 4px; font-size: 0.7rem; white-space: nowrap; z-index: 10; }
+  .bar-label { font-size: 0.65rem; color: #64748b; margin-top: 4px; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; max-width: 100%; }
+  .donut-chart { display: flex; align-items: center; gap: 16px; }
+  .donut-legend { list-style: none; font-size: 0.8rem; }
+  .donut-legend li { display: flex; align-items: center; gap: 6px; margin-bottom: 4px; color: #cbd5e1; }
+  .donut-legend .dot { width: 10px; height: 10px; border-radius: 50%; flex-shrink: 0; }
+  .model-table { margin-top: 16px; }
+  .model-bar-bg { background: #1e293b; border-radius: 4px; height: 18px; width: 100%; position: relative; }
+  .model-bar-fill { height: 100%; border-radius: 4px; }
+  .model-bar-text { position: absolute; right: 6px; top: 0; line-height: 18px; font-size: 0.7rem; color: #e2e8f0; }
 </style>
 </head>
 <body>
@@ -71,6 +88,7 @@
       <div class="tab active" onclick="switchTab('channels')">Channels</div>
       <div class="tab" onclick="switchTab('tokens')">API Keys</div>
       <div class="tab" onclick="switchTab('usage')">Usage</div>
+      <div class="tab" onclick="switchTab('logs')">Logs</div>
     </div>
 
     <div id="panel-channels" class="panel active">
@@ -85,7 +103,13 @@
       </div>
       <div class="section">
         <h2>Accounts</h2>
-        <table><thead><tr><th>ID</th><th>Email</th><th>Status</th><th>Tier</th><th>RPM</th><th>Errors</th><th>Action</th></tr></thead>
+        <div id="batch-bar" style="display:none;margin-bottom:12px;display:flex;gap:8px;align-items:center">
+          <span id="batch-count" style="color:#94a3b8;font-size:0.85rem"></span>
+          <button class="btn btn-primary btn-sm" onclick="batchAction('enable')">Enable</button>
+          <button class="btn btn-sm" style="background:#f59e0b;color:#000" onclick="batchAction('disable')">Disable</button>
+          <button class="btn btn-danger btn-sm" onclick="batchAction('delete')">Delete</button>
+        </div>
+        <table><thead><tr><th><input type="checkbox" id="ch-select-all" onchange="toggleSelectAll(this)"></th><th>ID</th><th>Email</th><th>Status</th><th>Tier</th><th>RPM</th><th>Errors</th><th>Action</th></tr></thead>
         <tbody id="ch-table"></tbody></table>
         <div id="ch-empty" class="empty" style="display:none">No accounts yet. Add one above.</div>
       </div>
@@ -110,7 +134,23 @@
     <div id="panel-usage" class="panel">
       <div class="section">
         <h2>Usage Statistics</h2>
+        <div id="usage-summary" style="margin-bottom:16px"></div>
+        <div class="chart-row">
+          <div class="chart-box"><h3>Daily Requests (7d)</h3><div id="chart-daily" class="bar-chart"></div></div>
+          <div class="chart-box"><h3>Token by Model (Today)</h3><div id="chart-model"></div></div>
+        </div>
         <div id="usage-content"></div>
+      </div>
+    </div>
+
+    <div id="panel-logs" class="panel">
+      <div class="section">
+        <h2>Real-time Logs <span id="log-status" style="font-size:0.75rem;color:#4ade80;margin-left:8px"></span></h2>
+        <div style="margin-bottom:8px">
+          <label style="font-size:0.85rem;color:#94a3b8"><input type="checkbox" id="log-auto" checked onchange="toggleLogAuto()"> Auto-refresh (3s)</label>
+          <button class="btn btn-sm" style="background:#334155;color:#e2e8f0;margin-left:8px" onclick="clearLogView()">Clear</button>
+        </div>
+        <div id="log-container" style="background:#0f172a;border-radius:8px;padding:12px;max-height:500px;overflow-y:auto;font-family:'Fira Code',monospace;font-size:0.78rem;line-height:1.6"></div>
       </div>
     </div>
 
@@ -164,14 +204,36 @@ async function load() {
 
 function renderChannels(channels) {
   const tbody = document.getElementById('ch-table');
-  if (!channels.length) { tbody.innerHTML = ''; document.getElementById('ch-empty').style.display = 'block'; return; }
+  if (!channels.length) { tbody.innerHTML = ''; document.getElementById('ch-empty').style.display = 'block'; document.getElementById('batch-bar').style.display = 'none'; return; }
   document.getElementById('ch-empty').style.display = 'none';
+  document.getElementById('batch-bar').style.display = 'flex';
   tbody.innerHTML = channels.map(c => `<tr>
+    <td><input type="checkbox" class="ch-check" value="${c.id}" onchange="updateBatchCount()"></td>
     <td>${c.id}</td><td>${c.email}</td>
     <td><span class="badge ${c.status}">${c.status}</span></td>
     <td>${c.tier}</td><td>${c.rpm}</td><td>${c.errorCount}</td>
     <td><button class="btn btn-danger btn-sm" onclick="deleteChannel('${c.id}')">Delete</button></td>
   </tr>`).join('');
+  updateBatchCount();
+}
+
+function toggleSelectAll(el) {
+  document.querySelectorAll('.ch-check').forEach(cb => cb.checked = el.checked);
+  updateBatchCount();
+}
+
+function updateBatchCount() {
+  const checked = document.querySelectorAll('.ch-check:checked');
+  document.getElementById('batch-count').textContent = checked.length ? `${checked.length} selected` : '';
+}
+
+async function batchAction(action) {
+  const ids = [...document.querySelectorAll('.ch-check:checked')].map(cb => cb.value);
+  if (!ids.length) return alert('Select accounts first');
+  if (action === 'delete' && !confirm(`Delete ${ids.length} account(s)?`)) return;
+  await api('/dashboard/api/channels/batch', { method: 'POST', body: JSON.stringify({ ids, action }) });
+  document.getElementById('ch-select-all').checked = false;
+  load();
 }
 
 async function addChannelByToken() {
@@ -222,15 +284,73 @@ async function deleteToken(id) {
   loadTokens();
 }
 
+const CHART_COLORS = ['#3b82f6','#8b5cf6','#06b6d4','#f59e0b','#ef4444','#10b981','#ec4899','#f97316','#6366f1','#14b8a6'];
+
+function renderBarChart(containerId, labels, values, color) {
+  const el = document.getElementById(containerId);
+  const max = Math.max(...values, 1);
+  el.innerHTML = labels.map((l, i) => {
+    const h = Math.max(2, (values[i] / max) * 120);
+    return `<div class="bar-col"><div class="bar" style="height:${h}px;background:${color || CHART_COLORS[i % CHART_COLORS.length]}" data-tip="${l}: ${values[i]}"></div><div class="bar-label">${l.slice(5)}</div></div>`;
+  }).join('');
+}
+
+function renderDonut(containerId, entries) {
+  const el = document.getElementById(containerId);
+  if (!entries.length) { el.innerHTML = '<div class="empty" style="padding:20px">No data</div>'; return; }
+  const total = entries.reduce((s, e) => s + e[1], 0);
+  const top = entries.slice(0, 8);
+  const otherVal = entries.slice(8).reduce((s, e) => s + e[1], 0);
+  if (otherVal > 0) top.push(['Other', otherVal]);
+  let cum = 0;
+  const segments = top.map((e, i) => {
+    const pct = (e[1] / total) * 100;
+    const start = cum;
+    cum += pct;
+    return { name: e[0], pct, start, color: CHART_COLORS[i % CHART_COLORS.length], val: e[1] };
+  });
+  const r = 60, cx = 70, cy = 70;
+  let svg = `<svg width="140" height="140" viewBox="0 0 140 140">`;
+  segments.forEach(s => {
+    const a1 = (s.start / 100) * 2 * Math.PI - Math.PI / 2;
+    const a2 = ((s.start + s.pct) / 100) * 2 * Math.PI - Math.PI / 2;
+    const la = s.pct > 50 ? 1 : 0;
+    const x1 = cx + r * Math.cos(a1), y1 = cy + r * Math.sin(a1);
+    const x2 = cx + r * Math.cos(a2), y2 = cy + r * Math.sin(a2);
+    svg += `<path d="M${cx},${cy} L${x1},${y1} A${r},${r} 0 ${la} 1 ${x2},${y2} Z" fill="${s.color}" opacity="0.85"/>`;
+  });
+  svg += `<circle cx="${cx}" cy="${cy}" r="30" fill="#0f172a"/></svg>`;
+  const legend = '<ul class="donut-legend">' + segments.map(s =>
+    `<li><span class="dot" style="background:${s.color}"></span>${s.name.length > 20 ? s.name.slice(0,18)+'..' : s.name} (${s.val})</li>`
+  ).join('') + '</ul>';
+  el.innerHTML = `<div class="donut-chart">${svg}${legend}</div>`;
+}
+
 async function loadUsage() {
   const data = await api('/dashboard/api/stats');
   const el = document.getElementById('usage-content');
+  const sumEl = document.getElementById('usage-summary');
   if (!data.daily || !data.daily.length) {
     el.innerHTML = '<div class="empty">No usage data yet.</div>';
+    sumEl.innerHTML = '';
+    document.getElementById('chart-daily').innerHTML = '';
+    document.getElementById('chart-model').innerHTML = '<div class="empty" style="padding:20px">No data</div>';
     return;
   }
-  let html = `<p style="margin-bottom:12px">Total: <strong>${data.totalRequests}</strong> requests, <strong>${data.totalTokens}</strong> tokens</p>`;
-  html += '<table><thead><tr><th>Date</th><th>Requests</th><th>Tokens</th><th>Top Model</th></tr></thead><tbody>';
+  sumEl.innerHTML = `<p>Total: <strong>${data.totalRequests}</strong> requests, <strong>${data.totalTokens}</strong> tokens</p>`;
+
+  // Daily bar chart (last 7 days)
+  const recent = data.daily.slice(-7);
+  renderBarChart('chart-daily', recent.map(d => d.date), recent.map(d => d.requests), '#3b82f6');
+
+  // Model donut (today)
+  const today = data.daily[data.daily.length - 1];
+  const modelTokens = today.tokensByModel || today.byModel || {};
+  const modelEntries = Object.entries(modelTokens).sort((a, b) => Number(b[1]) - Number(a[1]));
+  renderDonut('chart-model', modelEntries);
+
+  // Table
+  let html = '<table><thead><tr><th>Date</th><th>Requests</th><th>Tokens</th><th>Top Model</th></tr></thead><tbody>';
   for (const d of data.daily.slice().reverse()) {
     const topModel = Object.entries(d.byModel || {}).sort((a,b) => Number(b[1]) - Number(a[1]))[0];
     html += `<tr><td>${d.date}</td><td>${d.requests}</td><td>${d.tokens}</td><td>${topModel ? topModel[0] : '-'}</td></tr>`;
@@ -246,6 +366,52 @@ function switchTab(name) {
   document.getElementById('panel-' + name).classList.add('active');
   if (name === 'tokens') loadTokens();
   if (name === 'usage') loadUsage();
+  if (name === 'logs') { startLogPolling(); }
+  else { if (logTimer) { clearInterval(logTimer); logTimer = null; } }
+}
+
+// ─── Logs ───
+let logTimer = null;
+let logCursor = 0;
+
+async function loadLogs() {
+  try {
+    const data = await api(`/dashboard/api/logs?since=${logCursor}`);
+    const container = document.getElementById('log-container');
+    if (data.logs && data.logs.length) {
+      const levelColors = { debug: '#64748b', info: '#38bdf8', warn: '#fbbf24', error: '#f87171' };
+      for (const l of data.logs) {
+        const line = document.createElement('div');
+        line.innerHTML = `<span style="color:#64748b">${l.time}</span> <span style="color:${levelColors[l.level] || '#e2e8f0'}">[${l.level.toUpperCase()}]</span> ${l.message.replace(/</g,'&lt;')}`;
+        container.appendChild(line);
+      }
+      logCursor = data.total;
+      container.scrollTop = container.scrollHeight;
+    }
+    document.getElementById('log-status').textContent = '● live';
+  } catch {
+    document.getElementById('log-status').textContent = '○ disconnected';
+    document.getElementById('log-status').style.color = '#f87171';
+  }
+}
+
+function toggleLogAuto() {
+  if (document.getElementById('log-auto').checked) {
+    startLogPolling();
+  } else {
+    if (logTimer) { clearInterval(logTimer); logTimer = null; }
+  }
+}
+
+function startLogPolling() {
+  if (logTimer) clearInterval(logTimer);
+  loadLogs();
+  logTimer = setInterval(loadLogs, 3000);
+}
+
+function clearLogView() {
+  document.getElementById('log-container').innerHTML = '';
+  logCursor = 0;
 }
 
 // Init
