@@ -296,6 +296,7 @@ export async function handleAnthropicMessage(
         shell: ['Bash', 'execute_command', 'RunCommand', 'bash'],
         execute_command: ['Bash', 'execute_command', 'RunCommand', 'bash'],
         RunCommand: ['Bash', 'execute_command', 'RunCommand', 'bash'],
+        Run: ['Bash', 'execute_command', 'RunCommand', 'bash'],
         exec: ['Bash', 'execute_command', 'RunCommand', 'bash'],
         terminal: ['Bash', 'execute_command', 'RunCommand', 'bash'],
         // Searching
@@ -308,11 +309,13 @@ export async function handleAnthropicMessage(
         CodeSearch: ['Search', 'code_search', 'Grep', 'search'],
         find_by_name: ['Search', 'find_by_name', 'Glob', 'search'],
         // Listing
-        list_dir: ['ListDir', 'list_dir', 'ListDirectory', 'list_directory', 'ls'],
-        list_directory: ['ListDir', 'list_dir', 'ListDirectory', 'list_directory', 'ls'],
-        ListDirectory: ['ListDir', 'list_dir', 'ListDirectory', 'list_directory', 'ls'],
+        list_dir: ['Glob', 'Bash', 'ListDir', 'list_dir', 'ls'],
+        list_directory: ['Glob', 'Bash', 'ListDir', 'list_dir', 'ls'],
+        ListDirectory: ['Glob', 'Bash', 'ListDir', 'list_dir', 'ls'],
+        ListDir: ['Glob', 'Bash', 'ListDir', 'list_dir', 'ls'],
         // Planning/todos
         update_plan: ['TodoWrite', 'todo_write', 'UpdatePlan', 'todowrite'],
+        TodoRead: ['TodoWrite', 'todo_write', 'TodoRead'],
         // Web
         web_search: ['WebSearch', 'web_search', 'search_web'],
       };
@@ -339,7 +342,7 @@ export async function handleAnthropicMessage(
         // Write: code_content/text/code → content
         if (fixedName === 'Write' || ['create_file', 'write_file', 'WriteFile'].includes(originalName)) {
           if (!mapped.content) {
-            const contentKey = ['code_content', 'text', 'code', 'file_content', 'body'].find(k => mapped[k]);
+            const contentKey = ['new_contents', 'code_content', 'text', 'code', 'file_content', 'body'].find(k => mapped[k]);
             if (contentKey) {
               mapped.content = mapped[contentKey];
               delete mapped[contentKey];
@@ -360,6 +363,17 @@ export async function handleAnthropicMessage(
             delete mapped.plan_id;
             delete mapped.title;
             log.info(`Remapped TodoWrite: steps[${mapped.todos.length}] → todos`);
+          }
+        }
+
+        // ListDir → Glob: dir_path → pattern
+        if (fixedName === 'Glob' && (originalName === 'ListDir' || originalName === 'list_dir' || originalName === 'list_directory')) {
+          if (mapped.dir_path && !mapped.pattern) {
+            // Convert dir_path to glob pattern: /path/to/dir → /path/to/dir/*
+            const dir = mapped.dir_path.replace(/\/$/, '');
+            mapped.pattern = `${dir}/*`;
+            delete mapped.dir_path;
+            log.info(`Remapped ListDir dir_path="${dir}" → Glob pattern="${mapped.pattern}"`);
           }
         }
 
@@ -594,6 +608,10 @@ export async function handleAnthropicMessage(
                 const toolId = 'toolu_' + randomUUID().replace(/-/g, '').slice(0, 16);
                 let input: any;
                 try { input = JSON.parse(tc.function.arguments || '{}'); } catch { input = { raw: tc.function.arguments }; }
+                // Warn on empty args for tools that require parameters
+                if (typeof input === 'object' && input && Object.keys(input).length === 0) {
+                  log.warn(`Tool "${tc.function.name}" has EMPTY arguments. Raw: ${(tc.function.arguments || '').slice(0, 200)}`);
+                }
                 const fixedName = fixToolName(tc.function.name);
                 const fixedInput = fixToolArgs(fixedName, tc.function.name, input);
                 emitToolUseBlock(toolId, fixedName, fixedInput);
