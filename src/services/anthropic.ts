@@ -530,9 +530,25 @@ export async function handleAnthropicMessage(
         currentBlockType = type;
       }
 
+      // Required params per tool — suppress tool_use if missing
+      const REQUIRED_PARAMS: Record<string, string[]> = {
+        Read: ['file_path'], Edit: ['file_path', 'old_string', 'new_string'],
+        Write: ['file_path', 'content'], Bash: ['command'], Grep: ['pattern'],
+        Glob: ['pattern'], TodoWrite: ['todos'],
+      };
+
       function emitToolUseBlock(id: string, name: string, input: any) {
         // Always run fixToolArgs on emitted tool_use blocks
         const fixedInput = fixToolArgs(name, name, input);
+        // Validate required params — suppress broken tool calls
+        const required = REQUIRED_PARAMS[name];
+        if (required && typeof fixedInput === 'object' && fixedInput) {
+          const missing = required.filter(k => fixedInput[k] === undefined || fixedInput[k] === null || fixedInput[k] === '');
+          if (missing.length > 0) {
+            log.warn(`Suppressed ${name}(${id}): missing required [${missing.join(',')}], had [${Object.keys(fixedInput).join(',')}]`);
+            return;
+          }
+        }
         closeCurrentBlock();
         sse(res, { type: 'content_block_start', index: blockIndex, content_block: { type: 'tool_use', id, name, input: {} } });
         const inputJson = typeof fixedInput === 'string' ? fixedInput : JSON.stringify(fixedInput);
