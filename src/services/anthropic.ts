@@ -266,6 +266,7 @@ export async function handleAnthropicMessage(
       const hasTools = Array.isArray(body.tools) && body.tools.length > 0;
       const toolParser = hasTools ? new ToolCallStreamParser() : null;
       let emittedToolUse = false;
+      let internalTagBuffer = '';
 
       // Build valid tool name set + Cascade→Claude Code name mapping
       const validToolNames = new Set<string>();
@@ -598,10 +599,27 @@ export async function handleAnthropicMessage(
           // Text deltas → text block (sanitized, auto-closes thinking block first)
           // When tools are present, parse <tool_call> blocks from text
           if (chunk.text) {
-            // Strip Cascade's <tool_use> tags that leak into text output
+            // Strip Cascade's internal tags that leak into text output
             let safeText = textSanitizer.feed(chunk.text);
             if (safeText) {
               safeText = safeText.replace(/<\/?tool_use>/g, '').replace(/<tool_use\s*\/>/g, '');
+              // Strip <task-notification>...</task-notification> blocks (can span chunks)
+              safeText = safeText.replace(/<task-notification>[\s\S]*?<\/task-notification>/g, '');
+              // If we see an opening tag without closing, buffer it (partial block)
+              if (safeText.includes('<task-notification>')) {
+                internalTagBuffer = safeText.substring(safeText.indexOf('<task-notification>'));
+                safeText = safeText.substring(0, safeText.indexOf('<task-notification>'));
+              } else if (internalTagBuffer) {
+                // We're inside a buffered block, look for closing tag
+                internalTagBuffer += safeText;
+                const endIdx = internalTagBuffer.indexOf('</task-notification>');
+                if (endIdx >= 0) {
+                  safeText = internalTagBuffer.substring(endIdx + '</task-notification>'.length);
+                  internalTagBuffer = '';
+                } else {
+                  safeText = ''; // Still accumulating, discard
+                }
+              }
             }
             if (safeText && toolParser) {
               const parsed = toolParser.feed(safeText);
