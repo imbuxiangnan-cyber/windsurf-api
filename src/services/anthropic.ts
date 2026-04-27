@@ -322,6 +322,15 @@ export async function handleAnthropicMessage(
       // Remap Cascade argument names to Claude Code equivalents
       function fixToolArgs(fixedName: string, originalName: string, input: any): any {
         if (typeof input !== 'object' || !input) return input;
+        // Defense: if arguments is an array, convert to object
+        if (Array.isArray(input)) {
+          log.warn(`fixToolArgs: ${fixedName} received array arguments, converting to object`);
+          if (fixedName === 'Bash' && typeof input[0] === 'string') return { command: input[0] };
+          if (fixedName === 'Read' && typeof input[0] === 'string') return { file_path: input[0] };
+          if (fixedName === 'Write' && typeof input[0] === 'string') return { file_path: input[0], content: input[1] || '' };
+          if (fixedName === 'Grep' && typeof input[0] === 'string') return { pattern: input[0], path: input[1] || '.' };
+          return {};
+        }
         const mapped = { ...input };
 
         // Always fix target_file → file_path for Read/Edit/Write
