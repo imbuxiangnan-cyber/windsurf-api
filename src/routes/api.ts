@@ -6,6 +6,7 @@ import http from 'http';
 import { listModels, listAnthropicModels } from '../models.js';
 import { handleChatCompletion } from '../services/chat.js';
 import { handleAnthropicMessage } from '../services/anthropic.js';
+import { handleResponses } from '../services/responses.js';
 import { handleCountTokens } from '../services/count-tokens.js';
 import { hasActiveChannels } from '../services/channel.js';
 import { isLsReady } from '../core/langserver.js';
@@ -61,6 +62,25 @@ export async function handleApiRoutes(
       return true;
     }
     await handleChatCompletion(req, res, body, authKey);
+    return true;
+  }
+
+  // POST /v1/responses (OpenAI Responses API — Codex CLI default wire_api)
+  if (path === '/v1/responses' && method === 'POST') {
+    if (!isLsReady()) {
+      json(res, 503, { error: { message: 'Language server not ready', type: 'server_error' } });
+      return true;
+    }
+    if (!hasActiveChannels()) {
+      json(res, 503, { error: { message: 'No active channels. Add an account first.', type: 'server_error' } });
+      return true;
+    }
+    const body = (req as any).parsedBody;
+    if (!body) {
+      json(res, 400, { error: { message: 'Invalid JSON body', type: 'invalid_request_error' } });
+      return true;
+    }
+    await handleResponses(req, res, body);
     return true;
   }
 

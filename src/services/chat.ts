@@ -15,7 +15,7 @@ import { WindsurfClient } from '../core/client.js';
 import { getLsPort, getCsrfToken } from '../core/langserver.js';
 import { applyMapping, waitForConcurrency, releaseConcurrency, checkModelRateLimit } from './routing.js';
 import { PathSanitizeStream, sanitizeText } from './sanitize.js';
-import { buildToolPreamble, convertToolMessages, ToolCallStreamParser, ParsedToolCall } from './tool-emulation.js';
+import { buildToolPreamble, convertToolMessages, ToolCallStreamParser, ParsedToolCall, parseToolCallsFromText } from './tool-emulation.js';
 
 export class ChatError extends Error {
   constructor(message: string, public statusCode: number) {
@@ -371,12 +371,30 @@ export async function handleChatCompletion(
       }
     } else {
       const result = await runChatCore(chatMessages, modelKey, authKey);
+
+      // Parse <tool_call> blocks out of the accumulated text when caller
+      // provided tools[]. Without this, raw tool-call XML leaks into `content`
+      // and clients (Codex, Cursor, Aider, ...) can't dispatch the call.
+      let messageContent = sanitizeText(result.text);
+      let toolCalls: ParsedToolCall[] = [];
+      if (hasTools) {
+        const parsed = parseToolCallsFromText(result.text);
+        messageContent = sanitizeText(parsed.text);
+        toolCalls = parsed.toolCalls;
+      }
+
+      const assistantMsg: any = { role: 'assistant', content: messageContent };
+      if (toolCalls.length > 0) {
+        assistantMsg.tool_calls = toolCalls;
+      }
+      const finishReason = toolCalls.length > 0 ? 'tool_calls' : 'stop';
+
       json(res, 200, {
         id: chatId, object: 'chat.completion', created, model: result.modelInfo.name,
         choices: [{
           index: 0,
-          message: { role: 'assistant', content: sanitizeText(result.text) },
-          finish_reason: 'stop',
+          message: assistantMsg,
+          finish_reason: finishReason,
         }],
         usage: {
           prompt_tokens: result.promptTokens,

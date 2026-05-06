@@ -78,6 +78,7 @@ export function startServer(port: number): http.Server {
     log.info(`Server listening on http://0.0.0.0:${port}`);
     log.info('Endpoints:');
     log.info('  POST /v1/chat/completions   (OpenAI compatible)');
+    log.info('  POST /v1/responses          (OpenAI Responses API — Codex CLI)');
     log.info('  POST /v1/messages           (Anthropic compatible)');
     log.info('  GET  /v1/models');
     log.info('  GET  /health');

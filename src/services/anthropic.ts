@@ -7,7 +7,7 @@ import { randomUUID } from 'crypto';
 import { log } from '../config.js';
 import { resolveModel, isThinkingModel } from '../models.js';
 import { runChatCore, streamChatCore, StreamContext, StreamChunk, ChatError } from './chat.js';
-import { ToolCallStreamParser } from './tool-emulation.js';
+import { ToolCallStreamParser, parseToolCallsFromText } from './tool-emulation.js';
 import { consumeQuota } from './token.js';
 import { recordRequest } from './stats.js';
 import { stripMessagesPayload } from './strip-reminders.js';
@@ -809,12 +809,40 @@ export async function handleAnthropicMessage(
       if (result.thinking) {
         content.push({ type: 'thinking', thinking: sanitizeText(result.thinking) });
       }
-      content.push({ type: 'text', text: sanitizeText(result.text) });
+
+      // Parse <tool_call> blocks → tool_use content blocks when caller
+      // provided tools[]. Without this the model's tool calls leak as raw
+      // XML inside a text block and Claude Code can't dispatch them.
+      const hasToolsNs = Array.isArray(body.tools) && body.tools.length > 0;
+      let textContent = result.text;
+      const toolUses: { id: string; name: string; input: any }[] = [];
+      if (hasToolsNs) {
+        const parsed = parseToolCallsFromText(result.text);
+        textContent = parsed.text;
+        for (const tc of parsed.toolCalls) {
+          let input: any;
+          try { input = JSON.parse(tc.function.arguments || '{}'); } catch { input = { raw: tc.function.arguments }; }
+          toolUses.push({
+            id: 'toolu_' + randomUUID().replace(/-/g, '').slice(0, 16),
+            name: tc.function.name,
+            input,
+          });
+        }
+      }
+
+      const sanitizedText = sanitizeText(textContent);
+      if (sanitizedText.trim() || toolUses.length === 0) {
+        content.push({ type: 'text', text: sanitizedText });
+      }
+      for (const tu of toolUses) {
+        content.push({ type: 'tool_use', id: tu.id, name: tu.name, input: tu.input });
+      }
 
       json(res, 200, {
         id: msgId, type: 'message', role: 'assistant',
         model: body.model, content,
-        stop_reason: 'end_turn', stop_sequence: null,
+        stop_reason: toolUses.length > 0 ? 'tool_use' : 'end_turn',
+        stop_sequence: null,
         usage: {
           input_tokens: result.promptTokens,
           output_tokens: result.completionTokens,
